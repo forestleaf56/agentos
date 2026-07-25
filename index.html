@@ -673,33 +673,85 @@ function chatHeaders(pid){
   if(pid==='openrouter'){h['HTTP-Referer']=location.origin;h['X-Title']='AGENT OS';}
   return h;
 }
-/* streaming chat completion; onDelta(text), returns full text */
+/* non-streaming completion (fallback path) */
+async function llmOnce({provider,model,messages,temperature=0.8,signal}){
+  const P=PROVIDERS[provider];
+  const r=await fetch(P.base+'/chat/completions',{method:'POST',headers:chatHeaders(provider),
+    body:JSON.stringify({model,messages,temperature,stream:false}),signal});
+  const raw=await r.text();
+  let j={};try{j=JSON.parse(raw)}catch(e){}
+  if(!r.ok)throw new Error(P.name+': '+(apiErr(j)||'HTTP '+r.status));
+  const msg=j.choices?.[0]?.message||{};
+  let c=msg.content||'';
+  if(Array.isArray(c))c=c.map(p=>p.text||'').join('');
+  if(!c)c=msg.reasoning||msg.reasoning_content||'';
+  if(!c)throw new Error(P.name+' · '+model+' returned an empty reply — try another model');
+  return c;
+}
+function apiErr(j){
+  const e=j&&j.error;if(!e)return '';
+  return e.message||e.metadata?.raw||(typeof e==='string'?e:JSON.stringify(e)).slice(0,160);
+}
+/* streaming chat completion; onDelta(text), returns full text.
+   Robust: handles SSE error events, reasoning-only models, providers
+   that ignore stream:true, and falls back to non-streaming on failure. */
 async function llmStream({provider,model,messages,temperature=0.8,onDelta,signal}){
   const P=PROVIDERS[provider];if(!P)throw new Error('Unknown provider');
   if(!P.keyless&&!S.keys[provider])throw new Error(P.name+' needs an API key — add it in Settings.');
-  const body={model,messages,temperature,stream:true};
-  const r=await fetch(P.base+'/chat/completions',{method:'POST',headers:chatHeaders(provider),body:JSON.stringify(body),signal});
-  if(!r.ok){
-    let msg='HTTP '+r.status;
-    try{const j=await r.json();msg=j.error?.message||j.error||msg}catch(e){}
-    throw new Error(P.name+': '+msg);
+  if(!model)throw new Error('Pick a model first (tap the 🧠 pill).');
+  let full='',reason='',streamErr=null;
+  try{
+    const r=await fetch(P.base+'/chat/completions',{method:'POST',headers:chatHeaders(provider),
+      body:JSON.stringify({model,messages,temperature,stream:true}),signal});
+    if(!r.ok){
+      let j={};try{j=await r.json()}catch(e){}
+      const err=new Error(P.name+': '+(apiErr(j)||'HTTP '+r.status));err.api=true;throw err;
+    }
+    const ct=r.headers.get('content-type')||'';
+    if(!ct.includes('event-stream')){
+      /* provider ignored stream:true and sent plain JSON */
+      const j=await r.json();
+      const msg=j.choices?.[0]?.message||{};
+      full=(Array.isArray(msg.content)?msg.content.map(p=>p.text||'').join(''):msg.content)||msg.reasoning||msg.reasoning_content||'';
+      if(apiErr(j))throw new Error(P.name+': '+apiErr(j));
+      if(full)onDelta&&onDelta(full,full);
+    }else{
+      const reader=r.body.getReader(),dec=new TextDecoder();
+      let buf='';
+      while(true){
+        const{done,value}=await reader.read();if(done)break;
+        buf+=dec.decode(value,{stream:true});
+        const lines=buf.split('\n');buf=lines.pop();
+        for(const line of lines){
+          const s=line.trim();
+          if(!s.startsWith('data:'))continue;
+          const data=s.slice(5).trim();
+          if(data==='[DONE]')continue;
+          let j=null;try{j=JSON.parse(data)}catch(e){continue}
+          if(j.error){const err=new Error(P.name+': '+apiErr(j));err.api=true;throw err;}
+          const delta=j.choices?.[0]?.delta||{};
+          const d=delta.content||'';
+          if(d){full+=d;onDelta&&onDelta(d,full);}
+          const rz=delta.reasoning||delta.reasoning_content||'';
+          if(rz)reason+=rz;
+        }
+      }
+    }
+  }catch(e){
+    if(e.name==='AbortError')throw e;
+    streamErr=e;
   }
-  const reader=r.body.getReader(),dec=new TextDecoder();
-  let full='',buf='';
-  while(true){
-    const{done,value}=await reader.read();if(done)break;
-    buf+=dec.decode(value,{stream:true});
-    const lines=buf.split('\n');buf=lines.pop();
-    for(const line of lines){
-      const s=line.trim();
-      if(!s.startsWith('data:'))continue;
-      const data=s.slice(5).trim();
-      if(data==='[DONE]')continue;
-      try{
-        const j=JSON.parse(data);
-        const d=j.choices?.[0]?.delta?.content||'';
-        if(d){full+=d;onDelta&&onDelta(d,full);}
-      }catch(e){}
+  /* reasoning-only model: surface its reasoning as the reply */
+  if(!full&&reason){full=reason.trim();onDelta&&onDelta(full,full);}
+  /* stream failed or came back empty → one clean non-streaming retry */
+  if(!full){
+    if(signal&&signal.aborted)throw new DOMException('Aborted','AbortError');
+    if(streamErr&&streamErr.api)throw streamErr; /* definitive API error — don't hammer the provider again */
+    try{
+      full=await llmOnce({provider,model,messages,temperature,signal});
+      onDelta&&onDelta(full,full);
+    }catch(e2){
+      throw (streamErr&&!/HTTP 200/.test(streamErr.message))?streamErr:e2;
     }
   }
   return full;
@@ -824,7 +876,7 @@ const Chat={
     const imgs=(m.images||[]).map(u=>`<img class="att" src="${u}">`).join('');
     if(m.role==='user')return `<div class="msg user"><div class="bubble">${imgs}${esc(typeof m.content==='string'?m.content:m.text||'')}</div>
       <div class="meta"><button data-copy="${i}">copy</button></div></div>`;
-    return `<div class="msg ai"><div class="bubble">${md(m.content)}</div>
+    return `<div class="msg ai"><div class="bubble"${m.err?' style="border-color:rgba(217,87,87,.5);background:rgba(217,87,87,.08)"':''}>${md(m.content)}</div>
       <div class="meta"><span>${esc(m.model||'')}</span><button data-copy="${i}">copy</button><button data-speak="${i}">🔊</button><button data-retry="${i}">retry</button></div></div>`;
   },
   renderList(){
@@ -855,6 +907,7 @@ const Chat={
     const api=[];
     if(c.system)api.push({role:'system',content:c.system});
     for(const m of c.msgs){
+      if(m.err)continue;
       if(m.role==='user'&&m.images?.length){
         api.push({role:'user',content:[...m.images.map(u=>({type:'image_url',image_url:{url:u}})),{type:'text',text:m.content||' '}]});
       }else api.push({role:m.role,content:m.content});
@@ -866,18 +919,19 @@ const Chat={
     const sendBtn=$('#chat-send');sendBtn.textContent='■';sendBtn.classList.add('stop');
     this.abort=new AbortController();
     const live=$('#live .bubble');
-    let full='';
+    let full='',errMsg='';
     try{
       full=await llmStream({provider:c.provider,model:c.model,messages:api,temperature:c.temp,signal:this.abort.signal,
         onDelta:(d,f)=>{live.innerHTML=md(f);
           const nearBottom=body.scrollHeight-body.scrollTop-body.clientHeight<140;
           if(nearBottom)body.scrollTop=body.scrollHeight;}});
     }catch(e){
-      if(e.name==='AbortError'){full=live.textContent==='' ? '' : live.innerText;}
-      else{live.innerHTML=`<span style="color:#FF9C9C">⚠ ${esc(e.message)}</span>`;full='';}
+      if(e.name==='AbortError'){full='';}
+      else{errMsg=e.message||'Request failed';full='';}
     }
     sendBtn.textContent='➤';sendBtn.classList.remove('stop');this.abort=null;
     if(full){c.msgs.push({role:'assistant',content:full,model:c.model});save('chats');}
+    else if(errMsg){c.msgs.push({role:'assistant',content:'⚠️ '+errMsg+'\n\n*Tap **retry**, or switch model/provider above.*',model:c.model,err:true});save('chats');}
     $('#live')?.remove();this.renderMsgs();
   }
 };
