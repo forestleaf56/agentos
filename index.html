@@ -384,8 +384,21 @@ a{color:var(--acc)}
           <textarea id="vid-prompt" rows="3" placeholder="A paper boat sailing through neon rain…"></textarea>
           <span class="lbl">Model</span>
           <select id="vid-model"></select>
+          <span class="lbl">Start frame <span style="color:var(--faint);text-transform:none;letter-spacing:0">(optional — image-to-video)</span></span>
+          <div class="row" id="vid-framebar">
+            <button class="btn ghost sm" id="vid-pickframe">🖼 From gallery</button>
+            <button class="btn ghost sm hide" id="vid-clearframe">✕ Clear</button>
+          </div>
+          <div id="vid-framepreview" style="margin-top:8px"></div>
+          <span class="lbl">Aspect</span>
+          <div class="segrow" id="vid-aspect">
+            <button class="seg on" data-a="16:9">16:9</button>
+            <button class="seg" data-a="9:16">9:16</button>
+          </div>
+          <span class="lbl">Duration <span id="vid-durv" style="color:var(--acc)">6s</span></span>
+          <input type="range" id="vid-dur" min="2" max="15" step="1" value="6" style="padding:0;accent-color:var(--c-video)">
           <button class="btn full" id="vid-go" style="margin-top:14px">Generate video</button>
-          <div class="hint">Video generation runs on Pollinations' free video models. Queue times vary; clips are short. If a model is temporarily offline you'll get a clear error, not a hang.</div>
+          <div class="hint">Runs on Pollinations video models — <b>seedance-2.0</b> is the strongest free pick (1080p, native audio). Queue times vary. Add a free Pollinations key in Settings for higher limits.</div>
         </div>
         <div id="vid-result"></div>
       </div>
@@ -673,6 +686,7 @@ async function listModels(pid){
     else if(pid==='gemini'){
       list=(j.data||[]).map(m=>(m.id||'').replace(/^models\//,''))
         .filter(m=>/gemini|gemma|learnlm/i.test(m)&&!/embed|imagen|veo|tts|audio|aqa|image-|vision-embed/i.test(m));
+      if(!list.includes('gemini-flash-latest'))list.unshift('gemini-flash-latest');
     }
     else if(pid==='github')list=(j||[]).map(m=>m.id).filter(Boolean);
     else list=(j.data||[]).map(m=>m.id);
@@ -790,7 +804,7 @@ async function llm(prompt,{system,provider,model,temperature}={}){
   return llmStream({provider,model,messages,temperature});
 }
 function defaultModel(pid){
-  const d={pollinations:'openai',groq:'llama-3.3-70b-versatile',gemini:'gemini-2.5-flash',
+  const d={pollinations:'openai',groq:'llama-3.3-70b-versatile',gemini:'gemini-flash-latest',
     mistral:'mistral-small-latest',cerebras:'llama-3.3-70b',openrouter:'',github:''};
   return d[pid]||'';
 }
@@ -1027,9 +1041,16 @@ const Img={
       const names=Array.isArray(j)?j.map(m=>m.name||m):Object.keys(j);
       const imgs=names.filter(n=>!/video|veo|seedance|kling|wan/i.test(n));
       const vids=names.filter(n=>/video|veo|seedance|kling|wan/i.test(n));
-      if(imgs.length)sel.innerHTML=imgs.map(n=>`<option ${n==='flux'?'selected':''}>${esc(n)}</option>`).join('');
+      const pick=(arr,prefs)=>prefs.find(p=>arr.includes(p))||arr[0];
+      if(imgs.length){
+        const best=pick(imgs,['klein','flux','zimage','qwen-image']);
+        sel.innerHTML=imgs.map(n=>`<option ${n===best?'selected':''}>${esc(n)}</option>`).join('');
+      }
       const vsel=$('#vid-model');
-      vsel.innerHTML=vids.length?vids.map(n=>`<option>${esc(n)}</option>`).join(''):'<option value="">No video models exposed right now</option>';
+      if(vids.length){
+        const vbest=pick(vids,['seedance-2.0','seedance','wan-fast','wan']);
+        vsel.innerHTML=vids.map(n=>`<option ${n===vbest?'selected':''}>${esc(n)}</option>`).join('');
+      }else vsel.innerHTML='<option value="">No video models exposed right now</option>';
     }catch(e){$('#vid-model').innerHTML='<option value="">Model list unavailable</option>';}
   },
   url(prompt,{model,w,h,seed}={}){
@@ -1065,8 +1086,14 @@ const Img={
         <div class="hint" style="margin-top:8px">${esc(it.p)}</div>
         <div class="row" style="margin-top:12px">
           <a class="btn ghost sm" href="${it.u}" target="_blank" download style="text-decoration:none">⬇ Save</a>
-          <button class="btn ghost sm" onclick="$('#img-prompt').value=${JSON.stringify(it.p).replace(/"/g,'&quot;')};closeModal()">↩ Reuse prompt</button>
-        </div>`);});
+          <button class="btn ghost sm" data-reuse="${i}">↩ Reuse</button>
+          <button class="btn ghost sm" data-anim="${i}">🎬 Animate</button>
+        </div>`);
+      $('#modal-card [data-reuse]').onclick=()=>{$('#img-prompt').value=it.p;closeModal();};
+      $('#modal-card [data-anim]').onclick=()=>{
+        vidSetFrame(it.u);
+        if(!$('#vid-prompt').value.trim())$('#vid-prompt').value=it.p;
+        closeModal();go('video');toast('Start frame set — tweak the prompt and generate');};});
   }
 };
 $('#img-go').onclick=()=>Img.gen();
@@ -1089,16 +1116,40 @@ Img.renderGal();Img.loadModels();
 /* =========================================================
    VIDEO STUDIO (Pollinations free video models)
    ========================================================= */
+const Vid={image:'',aspect:'16:9'};
+$('#vid-aspect').querySelectorAll('.seg').forEach(b=>b.onclick=()=>{
+  $('#vid-aspect .on')?.classList.remove('on');b.classList.add('on');Vid.aspect=b.dataset.a;});
+$('#vid-dur').oninput=e=>$('#vid-durv').textContent=e.target.value+'s';
+function vidSetFrame(u){
+  Vid.image=u||'';
+  $('#vid-clearframe').classList.toggle('hide',!u);
+  $('#vid-framepreview').innerHTML=u?`<img src="${u}" style="max-width:120px;border-radius:10px;border:1px solid var(--line2)">`:'';
+}
+$('#vid-clearframe').onclick=()=>vidSetFrame('');
+$('#vid-pickframe').onclick=()=>{
+  if(!S.gallery.length)return toast('Generate some images first — gallery is empty');
+  modal(`<h2>Pick a start frame</h2><div class="gal">${S.gallery.map((it,i)=>`<img src="${it.u}" data-i="${i}" loading="lazy">`).join('')}</div>`);
+  $$('#modal-card .gal img').forEach(im=>im.onclick=()=>{vidSetFrame(S.gallery[+im.dataset.i].u);closeModal();});
+};
 $('#vid-go').onclick=async()=>{
   const p=$('#vid-prompt').value.trim();if(!p)return toast('Write a prompt first');
   const model=$('#vid-model').value;
   if(!model)return toast('No free video model available right now');
   const box=$('#vid-result');
-  box.innerHTML='<div class="shimmer">Rendering video… this can take a minute</div>';
-  const u=`https://image.pollinations.ai/prompt/${encodeURIComponent(p)}?model=${encodeURIComponent(model)}&nologo=true&seed=${Math.floor(Math.random()*1e6)}`;
+  box.innerHTML='<div class="shimmer">Rendering video… this can take a minute or two</div>';
+  let u=`https://image.pollinations.ai/prompt/${encodeURIComponent(p)}?model=${encodeURIComponent(model)}&nologo=true&seed=${Math.floor(Math.random()*1e6)}`
+    +`&duration=${$('#vid-dur').value}&aspect=${encodeURIComponent(Vid.aspect)}&aspect_ratio=${encodeURIComponent(Vid.aspect)}`;
+  if(Vid.image)u+='&image='+encodeURIComponent(Vid.image);
   try{
-    const r=await fetch(u);
-    if(!r.ok)throw new Error('HTTP '+r.status);
+    const headers={};
+    if(S.keys.pollinations)headers.Authorization='Bearer '+S.keys.pollinations;
+    const r=await fetch(u,{headers});
+    if(!r.ok){
+      let msg='HTTP '+r.status;
+      try{const t=await r.text();if(t&&t.length<300)msg+=' — '+t.replace(/<[^>]+>/g,'').slice(0,160);}catch(e){}
+      if(r.status===402)msg+=' · This model needs Pollen credits — add a free key from enter.pollinations.ai in Settings, or pick wan-fast.';
+      throw new Error(msg);
+    }
     const blob=await r.blob();
     const src=URL.createObjectURL(blob);
     if(blob.type.startsWith('video')){
@@ -1443,7 +1494,9 @@ const Settings={
     b.querySelectorAll('[data-savekey]').forEach(btn=>btn.onclick=()=>{
       const pid=btn.dataset.savekey;S.keys[pid]=$('#key-'+pid).value.trim();
       if(!S.keys[pid])delete S.keys[pid];
-      delete modelCache[pid];save('keys');renderStatus();toast(PROVIDERS[pid].name+' key saved');});
+      delete modelCache[pid];save('keys');renderStatus();
+      if(pid==='pollinations')Img.loadModels();
+      toast(PROVIDERS[pid].name+' key saved');});
     b.querySelectorAll('[data-test]').forEach(btn=>btn.onclick=async()=>{
       const pid=btn.dataset.test;
       S.keys[pid]=$('#key-'+pid).value.trim();delete modelCache[pid];
