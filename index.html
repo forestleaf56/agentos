@@ -512,12 +512,17 @@ a{color:var(--acc)}
       <div class="apphead">
         <h1><span class="dot" style="background:var(--c-code)"></span>Code Studio</h1>
         <span class="sp"></span>
+        <button class="iconbtn" id="code-projects" title="Projects">📁</button>
         <button class="iconbtn" id="code-dl" title="Download">⬇</button>
       </div>
       <div style="padding:10px 12px;border-bottom:1px solid var(--line);flex:none">
         <div class="inputbar">
           <textarea id="code-prompt" rows="1" placeholder="Describe an app… e.g. a neon pomodoro timer"></textarea>
           <button class="sendbtn" id="code-go" style="background:var(--c-code)">⚡</button>
+        </div>
+        <div class="segrow" id="code-mode" style="margin-top:8px">
+          <button class="seg on" data-m="new">✨ New app</button>
+          <button class="seg" data-m="improve">🔁 Improve current</button>
         </div>
       </div>
       <div id="code-tabs">
@@ -1736,8 +1741,11 @@ go=function(s){_go(s);
 };
 
 S.agents=Store.get('agents',null);
+S.agentRuns=Store.get('agentRuns',[]);
 S.docs=Store.get('docs',[]);
 S.code=Store.get('code','');
+S.codeProjects=Store.get('codeProjects',null);
+S.codeActive=Store.get('codeActive',null);
 
 /* =========================================================
    AGENTS — tool-using loop (works on any provider via JSON protocol)
@@ -1797,6 +1805,7 @@ const DEFAULT_AGENTS=[
    sys:'You are an elite engineer. Plan briefly, research APIs with search only if truly needed, then produce complete, working, self-contained code. Final report: one ```-fenced code block plus a 2-line usage note. No placeholders, no TODOs.'}
 ];
 const Agents={
+  cur:null,
   all(){
     if(!S.agents){S.agents=DEFAULT_AGENTS.slice();save('agents');}
     else{
@@ -1810,6 +1819,7 @@ const Agents={
   running:false,
   render(){
     const b=$('#ag-body');
+    const runs=S.agentRuns||[];
     b.innerHTML=this.all().map(a=>
       `<div class="agentcard">
         <span class="aem">${a.em}</span>
@@ -1819,11 +1829,61 @@ const Agents={
       </div>`).join('')+
       `<div class="card" id="ag-runbox" style="margin-top:14px">
         <h3>🤖 Mission control</h3>
-        <div class="hint">Pick an agent, give it a task. It reasons step by step with tools — 🔍 web search · 🌐 read pages · 🎨 images · 🧮 calc · 💾 save to Knowledge · 📂 read notes · 🕐 time — and delivers a polished report.</div>
+        <div class="hint">Pick an agent, give it a task. It reasons step by step with tools — 🔍 web search · 🌐 read pages · 🎨 images · 🧮 calc · 💾 save to Knowledge · 📂 read notes · 🕐 time — and keeps running even if you leave this screen.</div>
         <div id="ag-log" class="steplog"></div>
-      </div>`;
+      </div>
+      <div class="card"><h3>🗂 Past runs</h3><div id="ag-past"></div></div>`;
     b.querySelectorAll('[data-run]').forEach(x=>x.onclick=()=>this.startRun(x.dataset.run));
     b.querySelectorAll('[data-ed]').forEach(x=>x.onclick=()=>this.edit(x.dataset.ed));
+    if(this.cur)this.renderMission();
+    this.renderPast();
+  },
+  renderPast(){
+    const box=$('#ag-past');if(!box)return;
+    const runs=S.agentRuns||[];
+    box.innerHTML=runs.length?runs.map((r,i)=>
+      `<div class="docrow"><span>${r.em}</span>
+        <span class="dt"><b>${esc(r.name)}</b> · ${esc(r.task.slice(0,44))}</span>
+        <span class="dm">${new Date(r.t).toLocaleDateString()} ${new Date(r.t).toTimeString().slice(0,5)}</span>
+        <button class="del" data-view="${i}" title="View">👁</button>
+        <button class="del" data-fu="${i}" title="Follow up">↻</button>
+        <button class="del" data-rdel="${i}">✕</button></div>`).join('')
+      :'<div class="empty">Finished runs are saved here — with the full report and step log.</div>';
+    box.querySelectorAll('[data-view]').forEach(x=>x.onclick=()=>{
+      if(this.running)return toast('Wait for the current run to finish');
+      this.cur=S.agentRuns[+x.dataset.view];this.renderMission();
+      $('#ag-runbox').scrollIntoView({behavior:'smooth'});});
+    box.querySelectorAll('[data-fu]').forEach(x=>x.onclick=()=>this.followUp(+x.dataset.fu));
+    box.querySelectorAll('[data-rdel]').forEach(x=>x.onclick=()=>{
+      S.agentRuns.splice(+x.dataset.rdel,1);save('agentRuns');this.renderPast();});
+  },
+  followUp(i){
+    if(this.running)return toast('An agent is already running');
+    const r=S.agentRuns[i];if(!r)return;
+    const agent=this.all().find(a=>a.id===r.agentId)||{id:r.agentId,em:r.em,name:r.name,sys:r.sys||''};
+    modal(`<h2>↻ Follow up — ${r.em} ${esc(r.name)}</h2>
+      <div class="hint">The previous report is passed along as context, so the agent continues from where it left off.</div>
+      <span class="lbl">Follow-up task</span>
+      <textarea id="fu-task" rows="3" placeholder="Now expand on…, fix…, add…"></textarea>
+      <button class="btn full" id="fu-go" style="margin-top:14px">Continue</button>`);
+    $('#fu-go').onclick=()=>{const t=$('#fu-task').value.trim();if(!t)return;
+      closeModal();this.run(agent,t,r.final);};
+  },
+  renderMission(){
+    const l=$('#ag-log');if(!l||!this.cur)return;
+    const c=this.cur;
+    l.innerHTML=`<div class="arun">
+      <div class="arun-head"><span class="aem2">${c.em}</span><span class="an2">${esc(c.name)}</span>
+        <span class="astat" id="ar-status">${c.done?esc(c.status):`<span class="spin"></span>${esc(c.status||'planning')}`}</span></div>
+      <div class="arun-task">"${esc(c.task)}"</div>
+      <div id="ar-steps">${c.log.map(s=>`<div class="astep"><div class="sic">${s.i}</div><div class="sbody"><div class="skind">${s.k}</div>${s.h}</div></div>`).join('')}</div>
+      <div id="ar-final">${c.final?this.finalHtml(c):''}</div>
+    </div>`;
+    const cp=$('#ar-copy');if(cp)cp.onclick=()=>{navigator.clipboard.writeText(c.final);toast('Report copied');};
+  },
+  finalHtml(c){
+    return `<div class="afinal"><div class="ftag">${c.em} Report<span class="sp2"></span><button id="ar-copy">copy</button></div>
+      <div class="bubble" style="padding:0">${md(c.final)}</div></div>`;
   },
   edit(id){
     const a=id?this.all().find(x=>x.id===id):{id:uid(),em:'🤖',name:'',desc:'',sys:''};
@@ -1851,26 +1911,23 @@ const Agents={
     $('#ag-launch').onclick=()=>{const t=$('#ag-task').value.trim();if(!t)return;closeModal();this.run(a,t);};
   },
   step(icon,kind,html){
+    if(this.cur)this.cur.log.push({i:icon,k:kind,h:html});
     const l=$('#ar-steps');if(!l)return;
     l.insertAdjacentHTML('beforeend',
       `<div class="astep"><div class="sic">${icon}</div><div class="sbody"><div class="skind">${kind}</div>${html}</div></div>`);
     l.lastElementChild.scrollIntoView({block:'nearest'});
   },
   setStatus(txt,done){
+    if(this.cur){this.cur.status=txt;this.cur.done=!!done;}
     const s=$('#ar-status');if(!s)return;
     s.innerHTML=done?txt:`<span class="spin"></span>${txt}`;
   },
-  async run(a,task){
+  async run(a,task,context){
     if(this.running)return toast('An agent is already running');
     this.running=true;
     const t0=Date.now();
-    $('#ag-log').innerHTML=`<div class="arun">
-      <div class="arun-head"><span class="aem2">${a.em}</span><span class="an2">${esc(a.name)}</span>
-        <span class="astat" id="ar-status"></span></div>
-      <div class="arun-task">"${esc(task)}"</div>
-      <div id="ar-steps"></div>
-      <div id="ar-final"></div>
-    </div>`;
+    this.cur={agentId:a.id,em:a.em,name:a.name,sys:a.sys,task,log:[],final:'',status:'planning',done:false,t:t0};
+    this.renderMission();
     this.setStatus('planning');
     recent('🤖',a.name+': '+task.slice(0,32),'agents');
     const toolDocs=Object.entries(AGENT_TOOLS).map(([k,t])=>`- ${k}: ${t.desc}`).join('\n');
@@ -1879,7 +1936,8 @@ const Agents={
       `To finish: {"thought":"<optional>","final":"<full answer in rich markdown>"}\n`+
       `Available tools:\n${toolDocs}\n`+
       `Rules: never invent tool results; keep thoughts to one sentence; produce a polished, well-structured final report.`;
-    const msgs=[{role:'system',content:sys},{role:'user',content:task}];
+    const userMsg=context?`PREVIOUS REPORT (context from an earlier run):\n${context}\n\nFOLLOW-UP TASK: ${task}`:task;
+    const msgs=[{role:'system',content:sys},{role:'user',content:userMsg}];
     let toolCount=0;
     try{
       for(let step=0;step<12;step++){
@@ -1907,15 +1965,16 @@ const Agents={
         }else{
           const final=j&&j.final?j.final:raw;
           const secs=((Date.now()-t0)/1000).toFixed(0);
+          this.cur.final=final;
           this.setStatus(`done · ${toolCount} tool${toolCount===1?'':'s'} · ${secs}s`,true);
-          $('#ar-final').innerHTML=`<div class="afinal">
-            <div class="ftag">${a.em} Report<span class="sp2"></span><button id="ar-copy">copy</button></div>
-            <div class="bubble" style="padding:0">${md(final)}</div></div>`;
-          $('#ar-copy').onclick=()=>{navigator.clipboard.writeText(final);toast('Report copied');};
+          const fin=$('#ar-final');
+          if(fin){fin.innerHTML=this.finalHtml(this.cur);
+            const cp=$('#ar-copy');if(cp)cp.onclick=()=>{navigator.clipboard.writeText(final);toast('Report copied');};}
+          else toast(`${a.em} ${a.name} finished — report saved in Agents`);
           break;
         }
       }
-      if(!$('#ar-final').innerHTML){
+      if(!this.cur.final){
         this.setStatus('step limit reached',true);
         this.step('⚠️','stopped','Hit the 12-step limit without a final report — try a more focused task.');
       }
@@ -1923,6 +1982,11 @@ const Agents={
       this.setStatus('failed',true);
       this.step('⚠️','error',`<span style="color:#FF9C9C">${esc(e.message)}</span>`);
     }
+    /* persist the finished run (report + full step log) */
+    S.agentRuns=S.agentRuns||[];
+    S.agentRuns.unshift({...this.cur,log:this.cur.log.slice(0,60)});
+    S.agentRuns=S.agentRuns.slice(0,20);save('agentRuns');
+    this.renderPast();
     this.running=false;
   }
 };
@@ -1932,8 +1996,64 @@ $('#ag-add').onclick=()=>Agents.edit(null);
    CODE STUDIO
    ========================================================= */
 const codeEd=$('#code-editor');
+/* projects: every generation is saved; work continues across sessions */
+const Code={
+  all(){
+    if(!S.codeProjects){
+      S.codeProjects=[];
+      if(S.code&&S.code.trim()){
+        const p={id:uid(),title:'Imported work',code:S.code,t:Date.now()};
+        S.codeProjects.push(p);S.codeActive=p.id;save('codeActive');
+      }
+      save('codeProjects');
+    }
+    return S.codeProjects;
+  },
+  active(){return this.all().find(p=>p.id===S.codeActive)||null;},
+  create(title,code){
+    const p={id:uid(),title:(title||'Untitled app').slice(0,48),code:code||'',t:Date.now()};
+    this.all().unshift(p);S.codeProjects=S.codeProjects.slice(0,30);
+    S.codeActive=p.id;save('codeProjects');save('codeActive');
+    return p;
+  },
+  saveActive(code){
+    const p=this.active();
+    if(p){p.code=code;p.t=Date.now();save('codeProjects');}
+    S.code=code;save('code');
+  },
+  load(id){
+    const p=this.all().find(x=>x.id===id);if(!p)return;
+    S.codeActive=p.id;save('codeActive');
+    codeEd.value=p.code;S.code=p.code;save('code');
+    if(p.code)$('#code-preview').srcdoc=p.code;
+    codeTab('code');toast('Loaded: '+p.title);
+  },
+  pickerModal(){
+    const ps=this.all();
+    modal(`<h2>📁 Code projects</h2>
+      <button class="btn ghost sm full" id="cp-new" style="margin-bottom:10px">＋ New blank project</button>
+      <div>${ps.length?ps.map(p=>
+        `<div class="docrow"><span>${p.id===S.codeActive?'▶':'⚡'}</span>
+          <span class="dt"><b>${esc(p.title)}</b></span>
+          <span class="dm">${(p.code.length/1000).toFixed(1)}k · ${new Date(p.t).toLocaleDateString()}</span>
+          <button class="del" data-load="${p.id}">Open</button>
+          <button class="del" data-pdel="${p.id}">✕</button></div>`).join('')
+        :'<div class="empty">Generated apps are saved here automatically.</div>'}</div>`);
+    $('#cp-new').onclick=()=>{this.create('Untitled app','');codeEd.value='';S.code='';save('code');closeModal();codeTab('code');};
+    $$('#modal-card [data-load]').forEach(b=>b.onclick=()=>{this.load(b.dataset.load);closeModal();});
+    $$('#modal-card [data-pdel]').forEach(b=>b.onclick=()=>{
+      S.codeProjects=this.all().filter(p=>p.id!==b.dataset.pdel);
+      if(S.codeActive===b.dataset.pdel)S.codeActive=S.codeProjects[0]?.id||null;
+      save('codeProjects');save('codeActive');closeModal();this.pickerModal();});
+  }
+};
 codeEd.value=S.code;
-let codeT;codeEd.addEventListener('input',()=>{clearTimeout(codeT);codeT=setTimeout(()=>{S.code=codeEd.value;save('code');},700);});
+Code.all();
+let codeMode='new';
+$$('#code-mode .seg').forEach(b=>b.onclick=()=>{
+  $('#code-mode .on')?.classList.remove('on');b.classList.add('on');codeMode=b.dataset.m;});
+$('#code-projects').onclick=()=>Code.pickerModal();
+let codeT;codeEd.addEventListener('input',()=>{clearTimeout(codeT);codeT=setTimeout(()=>Code.saveActive(codeEd.value),700);});
 function codeTab(t){
   $$('#code-tabs .seg').forEach(s=>s.classList.toggle('on',s.dataset.tab===t));
   $('#code-gen').classList.add('hide');
@@ -1952,16 +2072,26 @@ $('#code-go').onclick=async()=>{
   codeEd.classList.add('hide');$('#code-preview').classList.add('hide');
   $('#code-gen').classList.remove('hide');$('#code-genc').textContent='…';
   try{
+    const improving=codeMode==='improve'&&codeEd.value.trim();
+    const messages=improving
+      ?[{role:'system',content:'You are an elite frontend engineer. You receive an existing single-file app and a change request. Apply the changes and output the COMPLETE updated index.html (never a diff or fragment) inside ONE ```html fence.'},
+        {role:'user',content:'CURRENT CODE:\n```html\n'+codeEd.value.slice(0,100000)+'\n```\n\nCHANGE REQUEST: '+p}]
+      :[{role:'system',content:'You are an elite frontend engineer. Output ONE complete self-contained index.html (inline CSS+JS, mobile friendly, dark polished design). Reply with ONLY the code inside a single ```html fence.'},
+        {role:'user',content:p}];
     const raw=await llmStream({provider:S.prefs.provider,model:S.prefs.model||defaultModel(S.prefs.provider),
-      messages:[{role:'system',content:'You are an elite frontend engineer. Output ONE complete self-contained index.html (inline CSS+JS, mobile friendly, dark polished design). Reply with ONLY the code inside a single ```html fence.'},
-                {role:'user',content:p}],
-      temperature:0.7,onDelta:(d,f)=>{$('#code-genc').textContent='… '+(f.length/1000).toFixed(1)+'k chars';}});
+      messages,temperature:0.7,
+      onDelta:(d,f)=>{const c=$('#code-genc');if(c)c.textContent='… '+(f.length/1000).toFixed(1)+'k chars';}});
     const m=raw.match(/```(?:html)?\s*([\s\S]*?)```/);
-    codeEd.value=(m?m[1]:raw).trim();
-    S.code=codeEd.value;save('code');
+    const code=(m?m[1]:raw).trim();
+    codeEd.value=code;
+    if(improving&&Code.active())Code.saveActive(code);
+    else Code.create(p,code);
+    S.code=code;save('code');
     $('#code-gen').classList.add('hide');
-    $('#code-preview').srcdoc=codeEd.value;codeTab('preview');
-    recent('⚡','Built: '+p.slice(0,36),'code');
+    $('#code-preview').srcdoc=code;
+    if($('#scr-code').classList.contains('active'))codeTab('preview');
+    else toast('⚡ Code ready — saved to Projects');
+    recent('⚡',(improving?'Improved: ':'Built: ')+p.slice(0,34),'code');
   }catch(e){
     $('#code-gen').classList.add('hide');
     codeEd.value='/* '+e.message+' */';codeTab('code');toast(e.message);
@@ -2117,7 +2247,7 @@ renderActiveModel();
   const _g=Img.gen.bind(Img);
   Img.gen=function(){bumpStat('img');return _g();};
   const _r=Agents.run.bind(Agents);
-  Agents.run=function(a,t){bumpStat('agent');return _r(a,t);};
+  Agents.run=function(...args){bumpStat('agent');return _r(...args);};
 }
 
 /* ---------- quick ask widget ---------- */
