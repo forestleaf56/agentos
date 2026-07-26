@@ -358,9 +358,9 @@ a{color:var(--acc)}
           <span class="lbl">Aspect</span>
           <div class="segrow" id="img-aspect">
             <button class="seg on" data-w="1024" data-h="1024">1:1</button>
-            <button class="seg" data-w="1280" data-h="720">16:9</button>
-            <button class="seg" data-w="720" data-h="1280">9:16</button>
-            <button class="seg" data-w="1152" data-h="864">4:3</button>
+            <button class="seg" data-w="1344" data-h="768">16:9</button>
+            <button class="seg" data-w="768" data-h="1344">9:16</button>
+            <button class="seg" data-w="1152" data-h="896">4:3</button>
           </div>
           <button class="btn full" id="img-go" style="margin-top:14px">Generate image</button>
         </div>
@@ -1216,7 +1216,21 @@ $('#vid-go').onclick=async()=>{
       box.innerHTML=`<div class="card"><video src="${src}" controls autoplay loop playsinline style="width:100%;border-radius:12px"></video>
         <a class="btn ghost sm" href="${src}" download="agentos-video.mp4" style="margin-top:10px;text-decoration:none">⬇ Save</a></div>`;
     }else{
-      box.innerHTML=`<div class="card"><img src="${src}" style="width:100%;border-radius:12px"><div class="hint">Model returned an image frame.</div></div>`;
+      /* Pollinations silently falls back to an image model when the requested
+         video model is unavailable (wrong id, tier, or empty Pollen balance) */
+      const cur=$('#vid-model').value;
+      const alts=['seedance-2.0','seedance','wan-fast','wan'].filter(m=>m!==cur&&[...$('#vid-model').options].some(o=>o.value===m));
+      box.innerHTML=`<div class="card" style="border-color:rgba(255,162,77,.45)">
+        <div style="font-size:13px;line-height:1.5">⚠️ The server ignored <b>${esc(cur)}</b> and fell back to an image model — that video model isn't available to your account right now (usually: empty Pollen balance, or the model id isn't active on this endpoint).</div>
+        <img src="${src}" style="width:100%;border-radius:12px;margin-top:10px;opacity:.85">
+        <div class="row" style="margin-top:12px">
+          ${alts.map(m=>`<button class="btn ghost sm" data-valt="${m}">Try ${m}</button>`).join('')}
+        </div>
+        <div class="hint">Check your Pollen balance at enter.pollinations.ai — seedance-2.0 needs ~1 Pollen per clip.</div></div>`;
+      box.querySelectorAll('[data-valt]').forEach(b=>b.onclick=()=>{
+        $('#vid-model').value=b.dataset.valt;
+        S.prefs.vidModel=b.dataset.valt;save('prefs');$('#vid-go').click();});
+      return;
     }
     recent('🎬',p.slice(0,40),'video');
   }catch(e){
