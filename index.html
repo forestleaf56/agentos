@@ -832,10 +832,11 @@ async function llmStream({provider,model,messages,temperature=0.8,onDelta,signal
   return full;
 }
 /* one-shot helper */
-async function llm(prompt,{system,provider,model,temperature}={}){
+async function llm(prompt,{system,provider,model,temperature,raw}={}){
   provider=provider||S.prefs.provider;model=model||S.prefs.model||defaultModel(provider);
   const messages=[];
-  if(system)messages.push({role:'system',content:system});
+  const sys=raw?system:(typeof groundingPreamble==='function'?groundingPreamble(system||''):system);
+  if(sys)messages.push({role:'system',content:sys});
   messages.push({role:'user',content:prompt});
   return llmStream({provider,model,messages,temperature});
 }
@@ -843,6 +844,42 @@ function defaultModel(pid){
   const d={pollinations:'openai',groq:'llama-3.3-70b-versatile',gemini:'gemini-flash-latest',
     mistral:'mistral-small-latest',cerebras:'llama-3.3-70b',openrouter:''};
   return d[pid]||'';
+}
+/* ---------- shared grounding: today's date + web search ---------- */
+function todayLine(){
+  const d=new Date();
+  return `Current date and time: ${d.toLocaleDateString(undefined,{weekday:'long',year:'numeric',month:'long',day:'numeric'})}, ${d.toTimeString().slice(0,5)} (${Intl.DateTimeFormat().resolvedOptions().timeZone}).`;
+}
+function groundingPreamble(extra){
+  return `${todayLine()} Your training data has a cutoff, so treat anything time-sensitive as potentially outdated. `
+    +`When the answer depends on current facts (news, prices, versions, who holds a role, "latest", "today"), rely on the WEB RESULTS provided to you rather than memory, and say so if none are available.`
+    +(extra?'\n'+extra:'');
+}
+/* Web search via Pollinations' search-enabled models, with a reader fallback.
+   Returns '' when nothing usable was found (callers degrade gracefully). */
+async function webSearch(query,{signal}={}){
+  const q=String(query||'').trim();if(!q)return '';
+  for(const m of ['gemini-search','searchgpt','perplexity']){
+    try{
+      const t=await llmStream({provider:'pollinations',model:m,temperature:0.2,signal,
+        messages:[{role:'user',content:`Search the web and report current facts with sources for: ${q}\nToday is ${new Date().toDateString()}. Be concise and factual.`}]});
+      if(t&&t.trim().length>60)return t.slice(0,3500);
+    }catch(e){}
+  }
+  try{
+    const r=await fetch('https://r.jina.ai/https://duckduckgo.com/html/?q='+encodeURIComponent(q),
+      {headers:{'Accept':'text/plain'},signal});
+    if(r.ok){
+      const t=(await r.text()).replace(/\n{3,}/g,'\n\n');
+      if(t.trim().length>80)return t.slice(0,3000);
+    }
+  }catch(e){}
+  return '';
+}
+/* should this message be grounded with a live search? */
+function needsSearch(text){
+  return /\b(today|todays|today's|tonight|now|current|currently|currently|latest|newest|recent|recently|this week|this month|this year|right now|as of|up to date|updated|news|price|stock|weather|score|released?|version|who is|nyeste|siste|i dag)\b/i.test(text||'')
+    || /\b20(2[6-9]|[3-9]\d)\b/.test(text||'');
 }
 function activeModel(){return {provider:S.prefs.provider,model:S.prefs.model||defaultModel(S.prefs.provider)};}
 function setActiveModel(provider,model){
@@ -924,7 +961,8 @@ const Chat={
     const c=this.cur();if(!c)return;
     const bar=$('#chat-modelbar');
     const provs=availableProviders();
-    bar.innerHTML=provs.map(p=>`<button class="pill ${p===c.provider?'on':''}" data-p="${p}">${PROVIDERS[p].name}</button>`).join('')
+    bar.innerHTML=`<button class="pill ${S.prefs.web!==false?'on':''}" id="pill-web" title="Web search grounding">🔍 Web ${S.prefs.web===false?'off':'auto'}</button>`
+      +provs.map(p=>`<button class="pill ${p===c.provider?'on':''}" data-p="${p}">${PROVIDERS[p].name}</button>`).join('')
       +`<button class="pill" id="pill-model">🧠 ${esc(c.model||'model…')}</button>`;
     bar.querySelectorAll('[data-p]').forEach(b=>b.onclick=async()=>{
       c.provider=b.dataset.p;c.model=defaultModel(c.provider);
@@ -933,6 +971,12 @@ const Chat={
       save('chats');setActiveModel(c.provider,c.model);this.renderModelbar();
     });
     $('#pill-model').onclick=()=>this.pickModel();
+    $('#pill-web').onclick=()=>{
+      const cyc={auto:'always',always:'off',off:'auto'};
+      const now=S.prefs.web===false?'off':(S.prefs.web==='always'?'always':'auto');
+      const next=cyc[now];
+      S.prefs.web=next==='off'?false:next;save('prefs');
+      this.renderModelbar();toast('Web search: '+next);};
   },
   async pickModel(){
     const c=this.cur();
@@ -991,9 +1035,20 @@ const Chat={
     }
     if(c.msgs.length===1){c.title=text.slice(0,42)||'Image chat';this.renderHead();recent('💬',c.title,'chat');}
     save('chats');this.renderMsgs();
+    /* live web grounding */
+    const webMode=S.prefs.web===false?'off':(S.prefs.web==='always'?'always':'auto');
+    let webCtx='';
+    if(webMode!=='off'&&text&&(webMode==='always'||needsSearch(text))){
+      const body0=$('#chat-body');
+      body0.insertAdjacentHTML('beforeend',`<div class="msg ai" id="websearching"><div class="bubble" style="font-size:12.5px;color:var(--dim)">🔍 Searching the web…</div></div>`);
+      body0.scrollTop=body0.scrollHeight;
+      try{webCtx=await webSearch(text);}catch(e){}
+      $('#websearching')?.remove();
+    }
     /* build API messages */
     const api=[];
-    if(c.system)api.push({role:'system',content:c.system});
+    api.push({role:'system',content:groundingPreamble(c.system||'')});
+    if(webCtx)api.push({role:'system',content:'WEB RESULTS (live, fetched just now):\n'+webCtx});
     for(const m of c.msgs){
       if(m.err)continue;
       if(m.role==='user'&&m.images?.length){
@@ -1438,7 +1493,15 @@ $('#vc-orb').onclick=async function(){
     if(!heard){setTimeout(loop,300);return;}
     state.textContent='Thinking…';orb.textContent='🧠';
     let reply='';
-    try{reply=await llm(heard,{system:'You are Mia, a warm, concise voice assistant. Answer in 1-3 spoken sentences, no markdown.'});}
+    let vctx='';
+    if(S.prefs.web!==false&&needsSearch(heard)){
+      state.textContent='Searching…';orb.textContent='🔍';
+      try{vctx=await webSearch(heard);}catch(e){}
+      if(!Voice.live)return;
+      state.textContent='Thinking…';orb.textContent='🧠';
+    }
+    try{reply=await llm((vctx?'WEB RESULTS (live):\n'+vctx+'\n\nQUESTION: ':'')+heard,
+      {system:groundingPreamble('You are Mia, a warm, concise voice assistant. Answer in 1-3 spoken sentences, no markdown, no URLs read aloud.')});}
     catch(e){reply='Sorry — '+e.message;}
     if(!Voice.live)return;
     state.textContent='Speaking…';orb.textContent='💬';
@@ -1606,6 +1669,13 @@ const Settings={
         <select id="set-prov">${Object.keys(PROVIDERS).filter(p=>!PROVIDERS[p].tts).map(p=>`<option value="${p}" ${p===S.prefs.provider?'selected':''}>${PROVIDERS[p].name}</option>`).join('')}</select>
         <span class="lbl">Active model</span>
         <select id="set-model"><option>Loading…</option></select>
+        <span class="lbl">Web search grounding</span>
+        <select id="set-web">
+          <option value="auto">Auto — search when the question needs current info</option>
+          <option value="always">Always — search on every message</option>
+          <option value="off">Off — model knowledge only</option>
+        </select>
+        <div class="hint">Everything (Chat, Voice, Agents, Code) is always told today's date. Search uses free search-enabled models with a reader fallback — no key needed.</div>
         <button class="btn sm full" id="set-saveprefs" style="margin-top:12px">Save preferences</button>
       </div>
       <div class="card"><h3>🔑 Providers <span class="badge">ALL FREE TIERS</span></h3>
@@ -1643,8 +1713,10 @@ const Settings={
     };
     fillModels();
     $('#set-prov').onchange=fillModels;
+    $('#set-web').value=S.prefs.web===false?'off':(S.prefs.web==='always'?'always':'auto');
     $('#set-saveprefs').onclick=()=>{
       S.prefs.name=$('#set-name').value.trim();
+      const wv=$('#set-web').value;S.prefs.web=wv==='off'?false:wv;
       setActiveModel($('#set-prov').value,$('#set-model').value);
       save('prefs');toast('Saved — this model now powers everything');renderStatus();};
     b.querySelectorAll('[data-savekey]').forEach(btn=>btn.onclick=()=>{
@@ -1751,17 +1823,10 @@ S.codeActive=Store.get('codeActive',null);
    AGENTS — tool-using loop (works on any provider via JSON protocol)
    ========================================================= */
 const AGENT_TOOLS={
-  search:{i:'🔍',desc:'Search the web for current information. args:{query}',run:async a=>{
-    for(const m of ['gemini-search','searchgpt','perplexity']){
-      try{
-        const t=await llmStream({provider:'pollinations',model:m,temperature:0.3,
-          messages:[{role:'user',content:'Web search. Give a factual, sourced summary for: '+a.query}]});
-        if(t&&t.length>40)return{text:t.slice(0,3500)};
-      }catch(e){}
-    }
-    const r=await fetch('https://r.jina.ai/https://duckduckgo.com/html/?q='+encodeURIComponent(a.query),{headers:{'Accept':'text/plain'}});
-    if(!r.ok)throw new Error('search unavailable right now');
-    return{text:(await r.text()).slice(0,3500)};}},
+  search:{i:'🔍',desc:'Search the web for current/latest information. args:{query}',run:async a=>{
+    const t=await webSearch(a.query);
+    if(!t)throw new Error('search unavailable right now — try a different query');
+    return{text:t};}},
   fetch:{i:'🌐',desc:'Read a webpage as text. args:{url}',run:async a=>{
     const r=await fetch('https://r.jina.ai/'+a.url,{headers:{'Accept':'text/plain'}});
     if(!r.ok)throw new Error('fetch failed '+r.status);
@@ -1931,7 +1996,7 @@ const Agents={
     this.setStatus('planning');
     recent('🤖',a.name+': '+task.slice(0,32),'agents');
     const toolDocs=Object.entries(AGENT_TOOLS).map(([k,t])=>`- ${k}: ${t.desc}`).join('\n');
-    const sys=`${a.sys}\n\nYou work in steps and can use tools. Reply with ONLY one JSON object per turn, nothing else:\n`+
+    const sys=`${groundingPreamble(a.sys)}\n\nYou work in steps and can use tools. Use the search tool whenever the task touches current events, prices, versions, or anything after your training cutoff — never guess at recent facts. Reply with ONLY one JSON object per turn, nothing else:\n`+
       `To think and act: {"thought":"<one short sentence of reasoning>","tool":"<name>","args":{...}}\n`+
       `To finish: {"thought":"<optional>","final":"<full answer in rich markdown>"}\n`+
       `Available tools:\n${toolDocs}\n`+
@@ -2073,10 +2138,18 @@ $('#code-go').onclick=async()=>{
   $('#code-gen').classList.remove('hide');$('#code-genc').textContent='…';
   try{
     const improving=codeMode==='improve'&&codeEd.value.trim();
+    /* ground on current docs/versions when the request implies external APIs or "latest" */
+    let cctx='';
+    if(S.prefs.web!==false&&(needsSearch(p)||/\bapi\b|\bsdk\b|\blibrary\b|\bcdn\b|\bversion\b/i.test(p))){
+      const gc=$('#code-genc');if(gc)gc.textContent='… checking current docs';
+      try{cctx=await webSearch(p+' current API usage documentation '+new Date().getFullYear());}catch(e){}
+    }
+    const engSys=groundingPreamble('You are an elite frontend engineer.')+
+      (cctx?'\n\nWEB RESULTS (live docs, use these for any external API/CDN/version details):\n'+cctx:'');
     const messages=improving
-      ?[{role:'system',content:'You are an elite frontend engineer. You receive an existing single-file app and a change request. Apply the changes and output the COMPLETE updated index.html (never a diff or fragment) inside ONE ```html fence.'},
+      ?[{role:'system',content:engSys+' You receive an existing single-file app and a change request. Apply the changes and output the COMPLETE updated index.html (never a diff or fragment) inside ONE ```html fence.'},
         {role:'user',content:'CURRENT CODE:\n```html\n'+codeEd.value.slice(0,100000)+'\n```\n\nCHANGE REQUEST: '+p}]
-      :[{role:'system',content:'You are an elite frontend engineer. Output ONE complete self-contained index.html (inline CSS+JS, mobile friendly, dark polished design). Reply with ONLY the code inside a single ```html fence.'},
+      :[{role:'system',content:engSys+' Output ONE complete self-contained index.html (inline CSS+JS, mobile friendly, dark polished design). Reply with ONLY the code inside a single ```html fence.'},
         {role:'user',content:p}];
     const raw=await llmStream({provider:S.prefs.provider,model:S.prefs.model||defaultModel(S.prefs.provider),
       messages,temperature:0.7,
