@@ -288,7 +288,7 @@ a{color:var(--acc)}
         <div class="sub">Your free all-in-one AI workspace. Everything runs on free tiers &amp; open endpoints.</div>
       </div>
       <div class="widget" id="w-quick">
-        <div class="wt">Quick ask</div>
+        <div class="wt">Quick ask · <span id="qa-model" style="color:var(--acc)"></span></div>
         <div class="inputbar">
           <input id="qa-input" placeholder="Ask anything…" style="border-radius:14px">
           <button class="sendbtn" id="qa-go" style="width:40px;height:40px">➤</button>
@@ -794,6 +794,16 @@ function defaultModel(pid){
     mistral:'mistral-small-latest',cerebras:'llama-3.3-70b',openrouter:'',github:''};
   return d[pid]||'';
 }
+function activeModel(){return {provider:S.prefs.provider,model:S.prefs.model||defaultModel(S.prefs.provider)};}
+function setActiveModel(provider,model){
+  S.prefs.provider=provider;S.prefs.model=model||defaultModel(provider);save('prefs');
+  renderActiveModel();
+}
+function renderActiveModel(){
+  const el=$('#qa-model');if(!el)return;
+  const a=activeModel();
+  el.textContent=PROVIDERS[a.provider].name+' · '+(a.model||'auto');
+}
 function availableProviders(){
   return Object.keys(PROVIDERS).filter(p=>!PROVIDERS[p].tts&&(PROVIDERS[p].keyless||S.keys[p]));
 }
@@ -870,7 +880,7 @@ const Chat={
       c.provider=b.dataset.p;c.model=defaultModel(c.provider);
       const ms=await listModels(c.provider);
       if(ms.length&&!ms.includes(c.model))c.model=ms[0];
-      save('chats');this.renderModelbar();
+      save('chats');setActiveModel(c.provider,c.model);this.renderModelbar();
     });
     $('#pill-model').onclick=()=>this.pickModel();
   },
@@ -885,7 +895,8 @@ const Chat={
       `<div style="max-height:46vh;overflow-y:auto">`+
       ms.map(m=>`<button class="chatitem ${m===c.model?'on':''}" data-m="${esc(m)}"><span class="ct">${esc(m)}</span></button>`).join('')+`</div>`;
     const bind=()=>box.querySelectorAll('[data-m]').forEach(b=>b.onclick=()=>{
-      c.model=b.dataset.m;save('chats');closeModal();this.renderModelbar();toast('Model: '+c.model);});
+      c.model=b.dataset.m;save('chats');setActiveModel(c.provider,c.model);
+      closeModal();this.renderModelbar();toast('Model set everywhere: '+c.model);});
     bind();
     $('#mm-q').oninput=e=>{const q=e.target.value.toLowerCase();
       box.querySelectorAll('[data-m]').forEach(b=>b.style.display=b.dataset.m.toLowerCase().includes(q)?'':'none');};
@@ -1384,8 +1395,10 @@ const Settings={
       <div class="card"><h3>👤 You</h3>
         <span class="lbl">Display name</span>
         <input id="set-name" value="${esc(S.prefs.name)}" placeholder="Your name">
-        <span class="lbl">Default chat provider</span>
+        <span class="lbl">Active provider — used by Chat, Writer, Agents, Code, Knowledge & Voice</span>
         <select id="set-prov">${Object.keys(PROVIDERS).filter(p=>!PROVIDERS[p].tts).map(p=>`<option value="${p}" ${p===S.prefs.provider?'selected':''}>${PROVIDERS[p].name}</option>`).join('')}</select>
+        <span class="lbl">Active model</span>
+        <select id="set-model"><option>Loading…</option></select>
         <button class="btn sm full" id="set-saveprefs" style="margin-top:12px">Save preferences</button>
       </div>
       <div class="card"><h3>🔑 Providers <span class="badge">ALL FREE TIERS</span></h3>
@@ -1406,14 +1419,27 @@ const Settings={
       <div class="card"><h3>🧹 Data</h3>
         <div class="row">
           <button class="btn ghost sm" id="set-export">Export backup</button>
+          <button class="btn ghost sm" id="set-import">Import backup</button>
           <button class="btn danger sm" id="set-wipe">Erase everything</button>
         </div>
+        <input type="file" id="set-importfile" accept=".json,application/json" class="hide">
       </div>
       <div class="hint" style="text-align:center;padding:6px 0 20px">AGENT OS · free forever · your keys, your data</div>`;
     /* wiring */
+    const fillModels=async()=>{
+      const pid=$('#set-prov').value;
+      const sel=$('#set-model');
+      sel.innerHTML='<option>Loading…</option>';
+      const ms=await listModels(pid);
+      const cur=pid===S.prefs.provider?(S.prefs.model||defaultModel(pid)):defaultModel(pid);
+      sel.innerHTML=(ms.length?ms:[defaultModel(pid)].filter(Boolean)).map(m=>`<option ${m===cur?'selected':''}>${esc(m)}</option>`).join('')||'<option value="">Add a key first</option>';
+    };
+    fillModels();
+    $('#set-prov').onchange=fillModels;
     $('#set-saveprefs').onclick=()=>{
-      S.prefs.name=$('#set-name').value.trim();S.prefs.provider=$('#set-prov').value;S.prefs.model='';
-      save('prefs');toast('Saved');renderStatus();};
+      S.prefs.name=$('#set-name').value.trim();
+      setActiveModel($('#set-prov').value,$('#set-model').value);
+      save('prefs');toast('Saved — this model now powers everything');renderStatus();};
     b.querySelectorAll('[data-savekey]').forEach(btn=>btn.onclick=()=>{
       const pid=btn.dataset.savekey;S.keys[pid]=$('#key-'+pid).value.trim();
       if(!S.keys[pid])delete S.keys[pid];
@@ -1442,6 +1468,23 @@ const Settings={
     $('#set-export').onclick=()=>{
       const blob=new Blob([JSON.stringify(S,null,1)],{type:'application/json'});
       const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='agentos-backup.json';a.click();};
+    $('#set-import').onclick=()=>$('#set-importfile').click();
+    $('#set-importfile').onchange=e=>{
+      const f=e.target.files[0];if(!f)return;
+      const r=new FileReader();
+      r.onload=()=>{
+        try{
+          const j=JSON.parse(String(r.result));
+          const KNOWN=['keys','chats','activeChat','gallery','prompts','writer','prefs','recent','supa','agents','docs','code','stats'];
+          const found=KNOWN.filter(k=>j[k]!==undefined);
+          if(!found.length)throw new Error('Not an AGENT OS backup');
+          if(!confirm('Import backup? This restores: '+found.join(', ')+'. Current data for these will be replaced.'))return;
+          found.forEach(k=>localStorage.setItem('aos.'+k,JSON.stringify(j[k])));
+          toast('Backup imported — reloading…');
+          setTimeout(()=>location.reload(),700);
+        }catch(err){toast('⚠ Import failed: '+err.message);}
+      };
+      r.readAsText(f);e.target.value='';};
     $('#set-wipe').onclick=()=>{
       if(confirm('Erase ALL local AGENT OS data? This cannot be undone.')){
         Object.keys(localStorage).filter(k=>k.startsWith('aos.')).forEach(k=>localStorage.removeItem(k));
@@ -1771,6 +1814,7 @@ function renderStats(){
     .map(([k,l,i])=>`<div class="statbox"><div class="sn">${s[k]||0}</div><div class="sl">${i} ${l}</div></div>`).join('');
 }
 renderStats();
+renderActiveModel();
 /* hook counters into existing paths */
 {
   const _s=llmStream;
