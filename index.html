@@ -398,7 +398,7 @@ a{color:var(--acc)}
           <span class="lbl">Duration <span id="vid-durv" style="color:var(--acc)">6s</span></span>
           <input type="range" id="vid-dur" min="2" max="15" step="1" value="6" style="padding:0;accent-color:var(--c-video)">
           <button class="btn full" id="vid-go" style="margin-top:14px">Generate video</button>
-          <div class="hint">Runs on Pollinations video models — <b>seedance-2.0</b> is the strongest free pick (1080p, native audio). Queue times vary. Add a free Pollinations key in Settings for higher limits.</div>
+          <div class="hint">All video models cost Pollen credits — registered free accounts get a <b>1.5 Pollen/week grant</b> (claim it in your <a href="https://enter.pollinations.ai" target="_blank" rel="noopener">dashboard</a>). <b>p-video-720p</b> and <b>wan-fast</b> are the cheapest per clip; <b>seedance-2.0</b> is the best quality (1080p, native audio) at ~1 Pollen.</div>
         </div>
         <div id="vid-result"></div>
       </div>
@@ -1052,7 +1052,7 @@ const Img={
     /* known-good baseline from Pollinations API docs — always offered even if the
        models endpoint changes schema again; real availability errors surface on use */
     const KNOWN_IMG=['klein','flux','zimage','qwen-image','kontext','nanobanana','nanobanana-2','gptimage','seedream5','wan-image','sana','p-image'];
-    const KNOWN_VID=['seedance-2.0','seedance','wan-fast','wan','veo','nova-reel'];
+    const KNOWN_VID=['p-video-720p','wan-fast','wan','seedance-2.0','seedance','ltx-2','nova-reel','p-video-1080p','veo'];
     let imgs=[],vids=[];
     const headers={};
     if(S.keys.pollinations)headers.Authorization='Bearer '+S.keys.pollinations;
@@ -1070,7 +1070,11 @@ const Img={
             isVid=m.video===true||m.type==='video'||!!m.video_capabilities||(Array.isArray(om)&&om.includes('video'));
             const tier=((m.tier||m.pricing_tier||'')+'').toLowerCase();
             const price=m.pricing&&(m.pricing.pollen||m.pricing.price||m.pricing.per_generation);
-            if((tier&&tier!=='anonymous')||(price&&price>0)||m.paid===true)this.meta[name]={paid:true};
+            const meta={};
+            if((tier&&tier!=='anonymous')||(price&&price>0)||m.paid===true)meta.paid=true;
+            const ratios=m.aspect_ratios||m.aspectRatios||m.supported_aspect_ratios;
+            if(Array.isArray(ratios)&&ratios.length)meta.ratios=ratios.map(String);
+            if(meta.paid||meta.ratios)this.meta[name]=meta;
           }
           if(!isVid)isVid=/^(veo|seedance|wan|kling|sora|hailuo|ltx|nova-reel|pixverse)/i.test(name)&&!/image/i.test(name);
           (isVid?vids:imgs).push(name);
@@ -1081,7 +1085,9 @@ const Img={
     imgs=[...new Set([...imgs,...KNOWN_IMG])];
     vids=[...new Set([...vids,...KNOWN_VID])];
     const IMG_PREF=['klein','flux','zimage','qwen-image'];
-    const VID_PREF=['seedance-2.0','seedance','wan-fast','wan'];
+    /* cheapest-first default: every video model costs Pollen (free tier = 1.5/week grant),
+       so default to the ones that stretch the grant furthest */
+    const VID_PREF=['p-video-720p','wan-fast','wan','seedance-2.0','seedance'];
     const order=(arr,prefs)=>[...prefs.filter(p=>arr.includes(p)),...arr.filter(a=>!prefs.includes(a)).sort()];
     imgs=order(imgs,IMG_PREF);vids=order(vids,VID_PREF);
     /* default = user's explicit choice if still valid, else best preferred */
@@ -1116,7 +1122,19 @@ const Img={
       const blob=await r.blob();
       const src=URL.createObjectURL(blob);
       const img=new Image();img.src=src;
-      box.innerHTML='';box.appendChild(img);
+      try{await img.decode();}catch(e){}
+      /* verify the model actually honored the requested aspect ratio */
+      let warn='';
+      const model=$('#img-model').value;
+      const label=this.w===this.h?'1:1':(this.w>this.h?(Math.abs(this.w/this.h-16/9)<.08?'16:9':'4:3'):(Math.abs(this.h/this.w-16/9)<.08?'9:16':'3:4'));
+      const known=this.meta[model]&&this.meta[model].ratios;
+      if(known&&!known.includes(label)){
+        warn=`⚠️ <b>${esc(model)}</b> only supports ${known.join(', ')} — it can't do ${label} natively.`;
+      }else if(img.naturalWidth&&Math.abs((img.naturalWidth/img.naturalHeight)-(this.w/this.h))/(this.w/this.h)>0.04){
+        warn=`⚠️ <b>${esc(model)}</b> returned ${img.naturalWidth}×${img.naturalHeight} instead of ${label} — it doesn't support this aspect ratio natively. Shown unstretched; try <b>flux</b> or <b>zimage</b> for exact ${label}.`;
+      }
+      box.innerHTML=warn?`<div class="hint" style="color:var(--c-video);margin-bottom:8px;font-size:12.5px">${warn}</div>`:'';
+      box.appendChild(img);
       box.insertAdjacentHTML('beforeend',`<div class="row" style="margin-top:10px">
         <a class="btn ghost sm" href="${src}" download="agentos-image.jpg" style="text-decoration:none">⬇ Save</a>
         <button class="btn ghost sm" id="img-again">🎲 Reroll</button>
@@ -1200,7 +1218,7 @@ $('#vid-go').onclick=async()=>{
   const box=$('#vid-result');
   box.innerHTML='<div class="shimmer">Rendering video… this can take a minute or two</div>';
   let u=`https://image.pollinations.ai/prompt/${encodeURIComponent(p)}?model=${encodeURIComponent(model)}&nologo=true&seed=${Math.floor(Math.random()*1e6)}`
-    +`&duration=${$('#vid-dur').value}&aspect=${encodeURIComponent(Vid.aspect)}&aspect_ratio=${encodeURIComponent(Vid.aspect)}`;
+    +`&duration=${$('#vid-dur').value}&aspectRatio=${encodeURIComponent(Vid.aspect)}`;
   if(Vid.image)u+='&image='+encodeURIComponent(Vid.image);
   try{
     const headers={};
@@ -1219,7 +1237,7 @@ $('#vid-go').onclick=async()=>{
       /* Pollinations silently falls back to an image model when the requested
          video model is unavailable (wrong id, tier, or empty Pollen balance) */
       const cur=$('#vid-model').value;
-      const alts=['seedance-2.0','seedance','wan-fast','wan'].filter(m=>m!==cur&&[...$('#vid-model').options].some(o=>o.value===m));
+      const alts=['p-video-720p','wan-fast','seedance-2.0'].filter(m=>m!==cur&&[...$('#vid-model').options].some(o=>o.value===m));
       box.innerHTML=`<div class="card" style="border-color:rgba(255,162,77,.45)">
         <div style="font-size:13px;line-height:1.5">⚠️ The server ignored <b>${esc(cur)}</b> and fell back to an image model — that video model isn't available to your account right now (usually: empty Pollen balance, or the model id isn't active on this endpoint).</div>
         <img src="${src}" style="width:100%;border-radius:12px;margin-top:10px;opacity:.85">
@@ -1235,7 +1253,7 @@ $('#vid-go').onclick=async()=>{
     recent('🎬',p.slice(0,40),'video');
   }catch(e){
     const cur=$('#vid-model').value;
-    const alts=['wan-fast','wan','seedance'].filter(m=>m!==cur&&[...$('#vid-model').options].some(o=>o.value===m));
+    const alts=['p-video-720p','wan-fast','seedance-2.0'].filter(m=>m!==cur&&[...$('#vid-model').options].some(o=>o.value===m));
     box.innerHTML=`<div class="card" style="border-color:rgba(217,87,87,.4)">
       <div style="font-size:13px;white-space:pre-wrap">⚠️ Video failed: ${esc(e.message)}</div>
       <div class="row" style="margin-top:12px">
