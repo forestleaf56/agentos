@@ -651,9 +651,6 @@ const PROVIDERS={
     note:'Free experiment tier: all models, 1B tokens/mo.'},
   cerebras:{name:'Cerebras',base:'https://api.cerebras.ai/v1',site:'https://cloud.cerebras.ai',
     note:'Free tier ~1M tokens/day, extremely fast.'},
-  github:{name:'GitHub Models',base:'https://models.github.ai/inference',site:'https://github.com/settings/tokens',
-    note:'Free with a GitHub PAT (models scope). 100+ models.',
-    modelsUrl:'https://models.github.ai/catalog/models'},
   elevenlabs:{name:'ElevenLabs',tts:true,site:'https://elevenlabs.io/app/settings/api-keys',
     note:'Free tier ≈10k credits/mo for TTS.'}
 };
@@ -688,7 +685,6 @@ async function listModels(pid){
         .filter(m=>/gemini|gemma|learnlm/i.test(m)&&!/embed|imagen|veo|tts|audio|aqa|image-|vision-embed/i.test(m));
       if(!list.includes('gemini-flash-latest'))list.unshift('gemini-flash-latest');
     }
-    else if(pid==='github')list=(j||[]).map(m=>m.id).filter(Boolean);
     else list=(j.data||[]).map(m=>m.id);
     if(P.freeOnly)list=list.filter(m=>m.includes(':free'));
     list.sort();
@@ -805,7 +801,7 @@ async function llm(prompt,{system,provider,model,temperature}={}){
 }
 function defaultModel(pid){
   const d={pollinations:'openai',groq:'llama-3.3-70b-versatile',gemini:'gemini-flash-latest',
-    mistral:'mistral-small-latest',cerebras:'llama-3.3-70b',openrouter:'',github:''};
+    mistral:'mistral-small-latest',cerebras:'llama-3.3-70b',openrouter:''};
   return d[pid]||'';
 }
 function activeModel(){return {provider:S.prefs.provider,model:S.prefs.model||defaultModel(S.prefs.provider)};}
@@ -1041,16 +1037,20 @@ const Img={
       const names=Array.isArray(j)?j.map(m=>m.name||m):Object.keys(j);
       const imgs=names.filter(n=>!/video|veo|seedance|kling|wan/i.test(n));
       const vids=names.filter(n=>/video|veo|seedance|kling|wan/i.test(n));
-      const pick=(arr,prefs)=>prefs.find(p=>arr.includes(p))||arr[0];
+      const pick=(arr,prefs,saved)=>(saved&&arr.includes(saved))?saved:(prefs.find(p=>arr.includes(p))||arr[0]);
       if(imgs.length){
-        const best=pick(imgs,['klein','flux','zimage','qwen-image']);
+        const best=pick(imgs,['klein','flux','zimage','qwen-image'],S.prefs.imgModel);
         sel.innerHTML=imgs.map(n=>`<option ${n===best?'selected':''}>${esc(n)}</option>`).join('');
+        if(S.prefs.imgModel!==best){S.prefs.imgModel=best;save('prefs');}
       }
       const vsel=$('#vid-model');
       if(vids.length){
-        const vbest=pick(vids,['seedance-2.0','seedance','wan-fast','wan']);
+        const vbest=pick(vids,['seedance-2.0','seedance','wan-fast','wan'],S.prefs.vidModel);
         vsel.innerHTML=vids.map(n=>`<option ${n===vbest?'selected':''}>${esc(n)}</option>`).join('');
+        if(S.prefs.vidModel!==vbest){S.prefs.vidModel=vbest;save('prefs');}
       }else vsel.innerHTML='<option value="">No video models exposed right now</option>';
+      sel.onchange=()=>{S.prefs.imgModel=sel.value;save('prefs');toast('Image model: '+sel.value);};
+      vsel.onchange=()=>{S.prefs.vidModel=vsel.value;save('prefs');toast('Video model: '+vsel.value);};
     }catch(e){$('#vid-model').innerHTML='<option value="">Model list unavailable</option>';}
   },
   url(prompt,{model,w,h,seed}={}){
@@ -1181,9 +1181,17 @@ const Voice={
       try{
         const r=await fetch('https://api.elevenlabs.io/v1/voices',{headers:{'xi-api-key':S.keys.elevenlabs}});
         const j=await r.json();
-        sel.innerHTML=(j.voices||[]).map(v=>`<option value="${v.voice_id}">${esc(v.name)}</option>`).join('');
+        const voices=j.voices||[];
+        /* default: saved choice → Sarah → first */
+        const saved=S.prefs.ttsVoice;
+        const def=(saved&&voices.some(v=>v.voice_id===saved))?saved
+          :(voices.find(v=>/^sarah$/i.test(v.name))||voices[0]||{}).voice_id;
+        sel.innerHTML=voices.map(v=>`<option value="${v.voice_id}" ${v.voice_id===def?'selected':''}>${esc(v.name)}</option>`).join('');
       }catch(e){sel.innerHTML='<option value="">Could not load voices</option>';}
     }
+    /* restore saved voice for other engines too */
+    if(eng!=='elevenlabs'&&S.prefs.ttsVoice&&[...sel.options].some(o=>o.value===S.prefs.ttsVoice))
+      sel.value=S.prefs.ttsVoice;
   },
   async speak(text,engine){
     engine=engine||$('#tts-engine').value;
@@ -1230,8 +1238,12 @@ const Voice={
     return (await r.json()).text;
   }
 };
-$('#tts-engine').onchange=()=>Voice.renderVoices();
+$('#tts-engine').onchange=()=>{S.prefs.ttsEngine=$('#tts-engine').value;S.prefs.ttsVoice='';save('prefs');Voice.renderVoices();};
+$('#tts-voice').onchange=()=>{S.prefs.ttsVoice=$('#tts-voice').value;save('prefs');};
 speechSynthesis.onvoiceschanged=()=>{if($('#tts-engine').value==='browser')Voice.renderVoices();};
+/* engine default: saved choice, else ElevenLabs when a key exists */
+if(S.prefs.ttsEngine)$('#tts-engine').value=S.prefs.ttsEngine;
+else if(S.keys.elevenlabs)$('#tts-engine').value='elevenlabs';
 Voice.renderVoices();
 $('#tts-go').onclick=async()=>{
   const t=$('#tts-text').value.trim();if(!t)return toast('Type something first');
@@ -1496,6 +1508,8 @@ const Settings={
       if(!S.keys[pid])delete S.keys[pid];
       delete modelCache[pid];save('keys');renderStatus();
       if(pid==='pollinations')Img.loadModels();
+      if(pid==='elevenlabs'&&S.keys.elevenlabs&&!S.prefs.ttsEngine){
+        $('#tts-engine').value='elevenlabs';Voice.renderVoices();}
       toast(PROVIDERS[pid].name+' key saved');});
     b.querySelectorAll('[data-test]').forEach(btn=>btn.onclick=async()=>{
       const pid=btn.dataset.test;
@@ -1546,6 +1560,15 @@ const Settings={
 };
 
 /* ---------- boot ---------- */
+/* migrate away from removed providers (e.g. GitHub Models) */
+(function(){
+  let dirty=false;
+  if(!PROVIDERS[S.prefs.provider]){S.prefs.provider='pollinations';S.prefs.model='';save('prefs');}
+  S.chats.forEach(c=>{
+    if(!PROVIDERS[c.provider]){c.provider=S.prefs.provider;c.model=defaultModel(c.provider);dirty=true;}});
+  if(dirty)save('chats');
+  Object.keys(S.keys).forEach(k=>{if(!PROVIDERS[k]){delete S.keys[k];save('keys');}});
+})();
 renderStatus();
 Sync.init();
 if('serviceWorker' in navigator){/* PWA hook reserved for a later phase */}
