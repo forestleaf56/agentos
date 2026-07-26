@@ -607,6 +607,14 @@ let S={
   supa:Store.get('supa',{url:'',anon:'',email:''})
 };
 function save(k){Store.set(k,S[k]);}
+/* one-time repair of auto-saved prefs from earlier builds */
+if(!S.prefs.fix2){
+  S.prefs.fix2=true;
+  if(!S.prefs.imgModelUser)S.prefs.imgModel='';
+  if(!S.prefs.vidModelUser)S.prefs.vidModel='';
+  if(S.keys.elevenlabs){S.prefs.ttsEngine='elevenlabs';S.prefs.ttsVoice='';}
+  save('prefs');
+}
 function recent(icon,text,scr){S.recent.unshift({icon,text,scr,t:Date.now()});S.recent=S.recent.slice(0,8);save('recent');renderRecent();}
 
 /* ---------- toast / modal ---------- */
@@ -1029,29 +1037,49 @@ $('#chat-mic').onclick=()=>Voice.dictate(t=>{const i=$('#chat-input');i.value=(i
 const Img={
   w:1024,h:1024,
   async loadModels(){
-    const sel=$('#img-model');
-    sel.innerHTML='<option value="flux">flux (default)</option>';
-    try{
-      const r=await fetch('https://image.pollinations.ai/models');
-      const j=await r.json();
-      const names=Array.isArray(j)?j.map(m=>m.name||m):Object.keys(j);
-      const imgs=names.filter(n=>!/video|veo|seedance|kling|wan/i.test(n));
-      const vids=names.filter(n=>/video|veo|seedance|kling|wan/i.test(n));
-      const pick=(arr,prefs,saved)=>(saved&&arr.includes(saved))?saved:(prefs.find(p=>arr.includes(p))||arr[0]);
-      if(imgs.length){
-        const best=pick(imgs,['klein','flux','zimage','qwen-image'],S.prefs.imgModel);
-        sel.innerHTML=imgs.map(n=>`<option ${n===best?'selected':''}>${esc(n)}</option>`).join('');
-        if(S.prefs.imgModel!==best){S.prefs.imgModel=best;save('prefs');}
-      }
-      const vsel=$('#vid-model');
-      if(vids.length){
-        const vbest=pick(vids,['seedance-2.0','seedance','wan-fast','wan'],S.prefs.vidModel);
-        vsel.innerHTML=vids.map(n=>`<option ${n===vbest?'selected':''}>${esc(n)}</option>`).join('');
-        if(S.prefs.vidModel!==vbest){S.prefs.vidModel=vbest;save('prefs');}
-      }else vsel.innerHTML='<option value="">No video models exposed right now</option>';
-      sel.onchange=()=>{S.prefs.imgModel=sel.value;save('prefs');toast('Image model: '+sel.value);};
-      vsel.onchange=()=>{S.prefs.vidModel=vsel.value;save('prefs');toast('Video model: '+vsel.value);};
-    }catch(e){$('#vid-model').innerHTML='<option value="">Model list unavailable</option>';}
+    const sel=$('#img-model'),vsel=$('#vid-model');
+    /* known-good baseline from Pollinations API docs — always offered even if the
+       models endpoint changes schema again; real availability errors surface on use */
+    const KNOWN_IMG=['klein','flux','zimage','qwen-image','kontext','nanobanana','nanobanana-2','gptimage','seedream5','wan-image','sana','p-image'];
+    const KNOWN_VID=['seedance-2.0','seedance','wan-fast','wan','veo','nova-reel'];
+    let imgs=[],vids=[];
+    const headers={};
+    if(S.keys.pollinations)headers.Authorization='Bearer '+S.keys.pollinations;
+    for(const url of ['https://image.pollinations.ai/models','https://gen.pollinations.ai/image/models','https://gen.pollinations.ai/models']){
+      try{
+        const r=await fetch(url,{headers});if(!r.ok)continue;
+        const j=await r.json();
+        const arr=Array.isArray(j)?j:(j.models||j.data||[]);
+        for(const m of arr){
+          const name=typeof m==='string'?m:(m.name||m.id||'');
+          if(!name||/audio|tts|whisper|text|chat/i.test(name))continue;
+          let isVid=false;
+          if(typeof m==='object'){
+            const om=m.output_modalities||m.outputModalities||[];
+            isVid=m.video===true||m.type==='video'||!!m.video_capabilities||(Array.isArray(om)&&om.includes('video'));
+          }
+          if(!isVid)isVid=/^(veo|seedance|wan|kling|sora|hailuo|ltx|nova-reel|pixverse)/i.test(name)&&!/image/i.test(name);
+          (isVid?vids:imgs).push(name);
+        }
+        if(imgs.length+vids.length>2)break;
+      }catch(e){}
+    }
+    imgs=[...new Set([...imgs,...KNOWN_IMG])];
+    vids=[...new Set([...vids,...KNOWN_VID])];
+    const IMG_PREF=['klein','flux','zimage','qwen-image'];
+    const VID_PREF=['seedance-2.0','seedance','wan-fast','wan'];
+    const order=(arr,prefs)=>[...prefs.filter(p=>arr.includes(p)),...arr.filter(a=>!prefs.includes(a)).sort()];
+    imgs=order(imgs,IMG_PREF);vids=order(vids,VID_PREF);
+    /* default = user's explicit choice if still valid, else best preferred */
+    const pick=(arr,prefs,saved,userChosen)=>(userChosen&&saved&&arr.includes(saved))?saved:(prefs.find(p=>arr.includes(p))||arr[0]);
+    const ibest=pick(imgs,IMG_PREF,S.prefs.imgModel,S.prefs.imgModelUser);
+    sel.innerHTML=imgs.map(n=>`<option ${n===ibest?'selected':''}>${esc(n)}</option>`).join('');
+    S.prefs.imgModel=ibest;
+    const vbest=pick(vids,VID_PREF,S.prefs.vidModel,S.prefs.vidModelUser);
+    vsel.innerHTML=vids.map(n=>`<option ${n===vbest?'selected':''}>${esc(n)}</option>`).join('');
+    S.prefs.vidModel=vbest;save('prefs');
+    sel.onchange=()=>{S.prefs.imgModel=sel.value;S.prefs.imgModelUser=true;save('prefs');toast('Image model: '+sel.value);};
+    vsel.onchange=()=>{S.prefs.vidModel=vsel.value;S.prefs.vidModelUser=true;save('prefs');toast('Video model: '+vsel.value);};
   },
   url(prompt,{model,w,h,seed}={}){
     return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=${w||this.w}&height=${h||this.h}&model=${encodeURIComponent(model||$('#img-model').value||'flux')}&seed=${seed??Math.floor(Math.random()*1e6)}&nologo=true`;
