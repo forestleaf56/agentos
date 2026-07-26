@@ -528,6 +528,10 @@ a{color:var(--acc)}
         <button class="btn ghost sm" id="code-run">▶ Run</button>
       </div>
       <textarea id="code-editor" spellcheck="false" placeholder="<!-- Generated code appears here — or paste your own -->"></textarea>
+      <div id="code-gen" class="hide" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:var(--dim)">
+        <span class="spin" style="width:22px;height:22px;border-width:3px"></span>
+        <div style="font-family:var(--font-m);font-size:12px">Generating<span id="code-genc"></span></div>
+      </div>
       <iframe id="code-preview" class="hide" sandbox="allow-scripts allow-pointer-lock" title="Preview"></iframe>
     </section>
 
@@ -1932,6 +1936,7 @@ codeEd.value=S.code;
 let codeT;codeEd.addEventListener('input',()=>{clearTimeout(codeT);codeT=setTimeout(()=>{S.code=codeEd.value;save('code');},700);});
 function codeTab(t){
   $$('#code-tabs .seg').forEach(s=>s.classList.toggle('on',s.dataset.tab===t));
+  $('#code-gen').classList.add('hide');
   codeEd.classList.toggle('hide',t!=='code');
   $('#code-preview').classList.toggle('hide',t!=='preview');
 }
@@ -1943,18 +1948,24 @@ $('#code-dl').onclick=()=>{
 $('#code-go').onclick=async()=>{
   const p=$('#code-prompt').value.trim();if(!p)return toast('Describe the app first');
   const btn=$('#code-go');btn.textContent='…';btn.disabled=true;
-  codeTab('code');codeEd.value='/* generating… */';
+  /* calm generating state — no scrolling code wall */
+  codeEd.classList.add('hide');$('#code-preview').classList.add('hide');
+  $('#code-gen').classList.remove('hide');$('#code-genc').textContent='…';
   try{
     const raw=await llmStream({provider:S.prefs.provider,model:S.prefs.model||defaultModel(S.prefs.provider),
       messages:[{role:'system',content:'You are an elite frontend engineer. Output ONE complete self-contained index.html (inline CSS+JS, mobile friendly, dark polished design). Reply with ONLY the code inside a single ```html fence.'},
                 {role:'user',content:p}],
-      temperature:0.7,onDelta:(d,f)=>{codeEd.value=f;codeEd.scrollTop=codeEd.scrollHeight;}});
+      temperature:0.7,onDelta:(d,f)=>{$('#code-genc').textContent='… '+(f.length/1000).toFixed(1)+'k chars';}});
     const m=raw.match(/```(?:html)?\s*([\s\S]*?)```/);
     codeEd.value=(m?m[1]:raw).trim();
     S.code=codeEd.value;save('code');
+    $('#code-gen').classList.add('hide');
     $('#code-preview').srcdoc=codeEd.value;codeTab('preview');
     recent('⚡','Built: '+p.slice(0,36),'code');
-  }catch(e){codeEd.value='/* '+e.message+' */';toast(e.message);}
+  }catch(e){
+    $('#code-gen').classList.add('hide');
+    codeEd.value='/* '+e.message+' */';codeTab('code');toast(e.message);
+  }
   btn.textContent='⚡';btn.disabled=false;
 };
 
