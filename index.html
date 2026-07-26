@@ -227,6 +227,27 @@ a{color:var(--acc)}
 .step .sk{font-family:var(--font-m);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--c-agents)}
 .step img{max-width:200px;border-radius:10px;margin-top:6px;display:block}
 .step .sfinal{background:var(--glass);border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-top:4px}
+/* agent run report */
+.arun{background:linear-gradient(160deg,rgba(255,209,102,.06),rgba(255,255,255,.02));border:1px solid rgba(255,209,102,.25);border-radius:16px;padding:14px;margin-top:14px}
+.arun-head{display:flex;align-items:center;gap:10px;margin-bottom:4px}
+.arun-head .aem2{font-size:22px}
+.arun-head .an2{font-family:var(--font-d);font-weight:700;font-size:14px}
+.arun-head .astat{margin-left:auto;font-family:var(--font-m);font-size:10px;color:var(--c-agents);letter-spacing:.08em;display:flex;align-items:center;gap:6px}
+.arun-head .astat .spin{width:10px;height:10px;border:2px solid rgba(255,209,102,.3);border-top-color:var(--c-agents);border-radius:50%;animation:sp 1s linear infinite;display:inline-block}
+@keyframes sp{to{transform:rotate(360deg)}}
+.arun-task{font-size:12.5px;color:var(--dim);margin-bottom:10px;font-style:italic}
+.astep{display:flex;gap:10px;padding:8px 0;border-top:1px dashed var(--line)}
+.astep .sic{width:28px;height:28px;border-radius:9px;background:rgba(255,255,255,.05);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;font-size:13px;flex:none}
+.astep .sbody{flex:1;min-width:0;font-size:13px}
+.astep .skind{font-family:var(--font-m);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin-bottom:2px}
+.astep .sthought{color:var(--dim);font-style:italic}
+.astep details summary{cursor:pointer;color:var(--dim);font-size:12px;font-family:var(--font-m)}
+.astep details>div{margin-top:6px;background:rgba(0,0,0,.25);border:1px solid var(--line);border-radius:9px;padding:8px 10px;font-size:12px;max-height:180px;overflow-y:auto;white-space:pre-wrap}
+.astep img{max-width:210px;border-radius:10px;margin-top:6px;display:block}
+.afinal{margin-top:12px;background:var(--panel);border:1px solid var(--line2);border-radius:14px;padding:14px;position:relative}
+.afinal .ftag{font-family:var(--font-m);font-size:9.5px;letter-spacing:.12em;color:var(--c-agents);text-transform:uppercase;margin-bottom:8px;display:flex;align-items:center;gap:8px}
+.afinal .ftag .sp2{flex:1}
+.afinal .ftag button{font-family:var(--font-m);font-size:10px;color:var(--dim);border:1px solid var(--line);border-radius:7px;padding:3px 9px}
 /* code studio */
 #code-editor{flex:1;font-family:var(--font-m);font-size:12px;background:#0A0D18;border:none;border-radius:0;padding:14px;line-height:1.5;white-space:pre;overflow:auto}
 #code-editor:focus{box-shadow:none}
@@ -1104,7 +1125,9 @@ const Img={
     vsel.onchange=()=>{S.prefs.vidModel=vsel.value;S.prefs.vidModelUser=true;save('prefs');toast('Video model: '+vsel.value);};
   },
   url(prompt,{model,w,h,seed}={}){
-    return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=${w||this.w}&height=${h||this.h}&model=${encodeURIComponent(model||$('#img-model').value||'flux')}&seed=${seed??Math.floor(Math.random()*1e6)}&nologo=true`;
+    const W=w||this.w,H=h||this.h;
+    const ar=W===H?'1:1':(W>H?(Math.abs(W/H-16/9)<.08?'16:9':'4:3'):(Math.abs(H/W-16/9)<.08?'9:16':'3:4'));
+    return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=${W}&height=${H}&aspectRatio=${ar}&model=${encodeURIComponent(model||$('#img-model').value||'flux')}&seed=${seed??Math.floor(Math.random()*1e6)}&nologo=true`;
   },
   async gen(){
     const p=$('#img-prompt').value.trim();if(!p){toast('Write a prompt first');return;}
@@ -1120,20 +1143,29 @@ const Img={
         throw Object.assign(new Error(pollenErr(r.status,t)),{status:r.status});
       }
       const blob=await r.blob();
-      const src=URL.createObjectURL(blob);
-      const img=new Image();img.src=src;
-      try{await img.decode();}catch(e){}
-      /* verify the model actually honored the requested aspect ratio */
-      let warn='';
+      const raw=new Image();raw.src=URL.createObjectURL(blob);
+      try{await raw.decode();}catch(e){}
+      /* APP-SIDE ASPECT GUARANTEE:
+         The server resizes model output to the exact requested pixels, which
+         stretches models that generate at other ratios. So the app never trusts
+         that: if the decoded ratio deviates, we center-crop on canvas (crop,
+         never resample) to the exact requested ratio. Output is always true. */
       const model=$('#img-model').value;
-      const label=this.w===this.h?'1:1':(this.w>this.h?(Math.abs(this.w/this.h-16/9)<.08?'16:9':'4:3'):(Math.abs(this.h/this.w-16/9)<.08?'9:16':'3:4'));
-      const known=this.meta[model]&&this.meta[model].ratios;
-      if(known&&!known.includes(label)){
-        warn=`⚠️ <b>${esc(model)}</b> only supports ${known.join(', ')} — it can't do ${label} natively.`;
-      }else if(img.naturalWidth&&Math.abs((img.naturalWidth/img.naturalHeight)-(this.w/this.h))/(this.w/this.h)>0.04){
-        warn=`⚠️ <b>${esc(model)}</b> returned ${img.naturalWidth}×${img.naturalHeight} instead of ${label} — it doesn't support this aspect ratio natively. Shown unstretched; try <b>flux</b> or <b>zimage</b> for exact ${label}.`;
+      const reqR=this.w/this.h;
+      const label=this.w===this.h?'1:1':(this.w>this.h?(Math.abs(reqR-16/9)<.08?'16:9':'4:3'):(Math.abs(1/reqR-16/9)<.08?'9:16':'3:4'));
+      let img=raw,note='';
+      if(raw.naturalWidth&&Math.abs((raw.naturalWidth/raw.naturalHeight)-reqR)/reqR>0.02){
+        const c=document.createElement('canvas');
+        let cw=raw.naturalWidth,ch=Math.round(cw/reqR);
+        if(ch>raw.naturalHeight){ch=raw.naturalHeight;cw=Math.round(ch*reqR);}
+        c.width=cw;c.height=ch;
+        c.getContext('2d').drawImage(raw,(raw.naturalWidth-cw)/2,(raw.naturalHeight-ch)/2,cw,ch,0,0,cw,ch);
+        const b2=await new Promise(res=>c.toBlob(res,'image/jpeg',0.94));
+        if(b2){img=new Image();img.src=URL.createObjectURL(b2);try{await img.decode();}catch(e){}}
+        note=`ℹ️ <b>${esc(model)}</b> produced ${raw.naturalWidth}×${raw.naturalHeight}, so AGENT OS center-cropped it to exact ${label} — no stretching, ever. For full-frame ${label}, <b>flux</b> and <b>zimage</b> generate it natively.`;
       }
-      box.innerHTML=warn?`<div class="hint" style="color:var(--c-video);margin-bottom:8px;font-size:12.5px">${warn}</div>`:'';
+      const src=img.src;
+      box.innerHTML=note?`<div class="hint" style="color:var(--dim);margin-bottom:8px;font-size:12.5px">${note}</div>`:'';
       box.appendChild(img);
       box.insertAdjacentHTML('beforeend',`<div class="row" style="margin-top:10px">
         <a class="btn ghost sm" href="${src}" download="agentos-image.jpg" style="text-decoration:none">⬇ Save</a>
@@ -1707,31 +1739,70 @@ S.code=Store.get('code','');
    AGENTS — tool-using loop (works on any provider via JSON protocol)
    ========================================================= */
 const AGENT_TOOLS={
-  image:{desc:'Generate an image. args:{prompt}',run:async a=>{
-    const u=Img.url(a.prompt,{w:768,h:768});
-    await fetch(u).catch(()=>{});
-    return{text:'Image generated for: '+a.prompt,img:u};}},
-  fetch:{desc:'Read a webpage as text. args:{url}',run:async a=>{
+  search:{i:'🔍',desc:'Search the web for current information. args:{query}',run:async a=>{
+    for(const m of ['gemini-search','searchgpt','perplexity']){
+      try{
+        const t=await llmStream({provider:'pollinations',model:m,temperature:0.3,
+          messages:[{role:'user',content:'Web search. Give a factual, sourced summary for: '+a.query}]});
+        if(t&&t.length>40)return{text:t.slice(0,3500)};
+      }catch(e){}
+    }
+    const r=await fetch('https://r.jina.ai/https://duckduckgo.com/html/?q='+encodeURIComponent(a.query),{headers:{'Accept':'text/plain'}});
+    if(!r.ok)throw new Error('search unavailable right now');
+    return{text:(await r.text()).slice(0,3500)};}},
+  fetch:{i:'🌐',desc:'Read a webpage as text. args:{url}',run:async a=>{
     const r=await fetch('https://r.jina.ai/'+a.url,{headers:{'Accept':'text/plain'}});
     if(!r.ok)throw new Error('fetch failed '+r.status);
     const t=await r.text();
     return{text:t.slice(0,4000)+(t.length>4000?'\n…[truncated]':'')};}},
-  calc:{desc:'Calculate a math expression. args:{expression}',run:async a=>{
+  image:{i:'🎨',desc:'Generate an image. args:{prompt, aspect?:"1:1"|"16:9"|"9:16"}',run:async a=>{
+    const dims=a.aspect==='16:9'?{w:1344,h:768}:a.aspect==='9:16'?{w:768,h:1344}:{w:1024,h:1024};
+    const u=Img.url(a.prompt,dims);
+    await fetch(u,S.keys.pollinations?{headers:{Authorization:'Bearer '+S.keys.pollinations}}:{}).catch(()=>{});
+    return{text:'Image generated for: '+a.prompt,img:u};}},
+  calc:{i:'🧮',desc:'Calculate a math expression. args:{expression}',run:async a=>{
     const ex=String(a.expression||'');
     if(!/^[\d\s+\-*/().,%^eE]+$/.test(ex))throw new Error('unsafe expression');
     return{text:String(Function('"use strict";return ('+ex.replace(/\^/g,'**')+')')())};}},
-  time:{desc:'Current date & time. args:{}',run:async()=>({text:new Date().toString()})}
+  save_note:{i:'💾',desc:'Save findings to the Knowledge app. args:{title, text}',run:async a=>{
+    if(!a.text)throw new Error('nothing to save');
+    Know.add((a.title||'Agent note').slice(0,60),String(a.text));
+    return{text:'Saved to Knowledge: "'+(a.title||'Agent note')+'"'};}},
+  read_notes:{i:'📂',desc:'Search saved Knowledge documents. args:{query}',run:async a=>{
+    const hits=Know.retrieve(a.query||'',4);
+    if(!hits.length)return{text:'No matching notes found.'};
+    return{text:hits.map(x=>`[${x.doc}] ${x.c.slice(0,400)}`).join('\n\n')};}},
+  time:{i:'🕐',desc:'Current date & time. args:{}',run:async()=>({text:new Date().toString()})}
 };
 const DEFAULT_AGENTS=[
-  {id:'a1',em:'🔎',name:'Researcher',desc:'Reads webpages and synthesizes answers',
-   sys:'You are a meticulous researcher. Use the fetch tool on relevant URLs the user gives or well-known pages, then synthesize a clear sourced answer.'},
-  {id:'a2',em:'🎨',name:'Art Director',desc:'Designs and generates image sets',
-   sys:'You are an art director. Refine the brief, then use the image tool 1-3 times with strong prompts, then summarize your choices.'},
-  {id:'a3',em:'🧮',name:'Analyst',desc:'Careful math & reasoning with a calculator',
-   sys:'You are a precise analyst. Use the calc tool for all arithmetic. Show your reasoning in the final answer.'}
+  {id:'a1',em:'🔎',name:'Researcher',desc:'Searches the web & reads pages, delivers sourced briefs',
+   sys:'You are a meticulous researcher. Start with the search tool, fetch 1-2 promising pages for depth, cross-check facts, then deliver a structured brief: ## Key findings, ## Details, ## Sources.'},
+  {id:'a4',em:'✅',name:'Fact-Checker',desc:'Verifies claims with verdicts & evidence',
+   sys:'You are a rigorous fact-checker. Break the input into individual claims. Verify each with the search tool (and fetch when needed). Final report: a table of Claim | Verdict (✅ True / ❌ False / ⚠️ Mixed / ❓ Unverifiable) | Evidence, then a short overall assessment.'},
+  {id:'a2',em:'🎨',name:'Art Director',desc:'Develops a visual concept & generates an image set',
+   sys:'You are an art director. First state a concise creative direction (style, palette, mood). Then use the image tool 2-3 times with distinct, richly detailed prompts exploring that direction. Finish with which concept is strongest and why.'},
+  {id:'a5',em:'🎬',name:'Storyboarder',desc:'Turns an idea into a 4-frame visual story',
+   sys:'You are a storyboard artist. Turn the premise into exactly 4 sequential beats (setup, rising action, climax, resolution). Generate one image per beat with the image tool, keeping characters and style consistent across prompts. Final report: the story in 4 captioned beats.'},
+  {id:'a3',em:'🧮',name:'Analyst',desc:'Careful quantitative reasoning with a calculator',
+   sys:'You are a precise analyst. Use the calc tool for every piece of arithmetic — never compute in your head. Where data is missing, use the search tool. Final report: ## Answer, ## Method, ## Calculations.'},
+  {id:'a6',em:'📝',name:'Scribe',desc:'Researches a topic & files notes into Knowledge',
+   sys:'You are a knowledge scribe. Research the topic with search/fetch, distill the essentials, then use save_note to file a well-titled note into the Knowledge app. Check read_notes first to avoid duplicating existing notes. Final report: what you saved and the key takeaways.'},
+  {id:'a7',em:'🗞',name:'Daily Brief',desc:'Compiles a personal news digest',
+   sys:'You are a briefing officer. Use time to date the brief, then search 2-3 angles of the requested topics (or general top stories). Final report: a crisp digest — ## Top stories (one line each with why it matters), ## Worth watching. Keep it skimmable.'},
+  {id:'a8',em:'⚡',name:'Coder',desc:'Ships a working single-file app or script',
+   sys:'You are an elite engineer. Plan briefly, research APIs with search only if truly needed, then produce complete, working, self-contained code. Final report: one ```-fenced code block plus a 2-line usage note. No placeholders, no TODOs.'}
 ];
 const Agents={
-  all(){if(!S.agents){S.agents=DEFAULT_AGENTS.slice();save('agents');}return S.agents;},
+  all(){
+    if(!S.agents){S.agents=DEFAULT_AGENTS.slice();save('agents');}
+    else{
+      const ids=new Set(S.agents.map(a=>a.id));
+      let added=false;
+      DEFAULT_AGENTS.forEach(d=>{if(!ids.has(d.id)){S.agents.push({...d});added=true;}});
+      if(added)save('agents');
+    }
+    return S.agents;
+  },
   running:false,
   render(){
     const b=$('#ag-body');
@@ -1744,7 +1815,7 @@ const Agents={
       </div>`).join('')+
       `<div class="card" id="ag-runbox" style="margin-top:14px">
         <h3>🤖 Mission control</h3>
-        <div class="hint">Pick an agent, give it a task. It plans, uses tools (🎨 image · 🌐 fetch · 🧮 calc · 🕐 time) and reports back.</div>
+        <div class="hint">Pick an agent, give it a task. It reasons step by step with tools — 🔍 web search · 🌐 read pages · 🎨 images · 🧮 calc · 💾 save to Knowledge · 📂 read notes · 🕐 time — and delivers a polished report.</div>
         <div id="ag-log" class="steplog"></div>
       </div>`;
     b.querySelectorAll('[data-run]').forEach(x=>x.onclick=()=>this.startRun(x.dataset.run));
@@ -1775,45 +1846,79 @@ const Agents={
       <button class="btn full" id="ag-launch" style="margin-top:14px">Launch</button>`);
     $('#ag-launch').onclick=()=>{const t=$('#ag-task').value.trim();if(!t)return;closeModal();this.run(a,t);};
   },
-  log(kind,html){
-    const l=$('#ag-log');
-    l.insertAdjacentHTML('beforeend',`<div class="step"><div class="sk">${kind}</div>${html}</div>`);
-    l.scrollIntoView({block:'end'});
+  step(icon,kind,html){
+    const l=$('#ar-steps');if(!l)return;
+    l.insertAdjacentHTML('beforeend',
+      `<div class="astep"><div class="sic">${icon}</div><div class="sbody"><div class="skind">${kind}</div>${html}</div></div>`);
+    l.lastElementChild.scrollIntoView({block:'nearest'});
+  },
+  setStatus(txt,done){
+    const s=$('#ar-status');if(!s)return;
+    s.innerHTML=done?txt:`<span class="spin"></span>${txt}`;
   },
   async run(a,task){
     if(this.running)return toast('An agent is already running');
     this.running=true;
-    $('#ag-log').innerHTML='';
-    this.log('mission',esc(task));
+    const t0=Date.now();
+    $('#ag-log').innerHTML=`<div class="arun">
+      <div class="arun-head"><span class="aem2">${a.em}</span><span class="an2">${esc(a.name)}</span>
+        <span class="astat" id="ar-status"></span></div>
+      <div class="arun-task">"${esc(task)}"</div>
+      <div id="ar-steps"></div>
+      <div id="ar-final"></div>
+    </div>`;
+    this.setStatus('planning');
     recent('🤖',a.name+': '+task.slice(0,32),'agents');
     const toolDocs=Object.entries(AGENT_TOOLS).map(([k,t])=>`- ${k}: ${t.desc}`).join('\n');
-    const sys=`${a.sys}\n\nYou can use tools. To call a tool reply with ONLY this JSON and nothing else:\n{"tool":"<name>","args":{...}}\nAvailable tools:\n${toolDocs}\nWhen you have the final answer reply with ONLY:\n{"final":"<answer in markdown>"}\nNever mix JSON with other text.`;
+    const sys=`${a.sys}\n\nYou work in steps and can use tools. Reply with ONLY one JSON object per turn, nothing else:\n`+
+      `To think and act: {"thought":"<one short sentence of reasoning>","tool":"<name>","args":{...}}\n`+
+      `To finish: {"thought":"<optional>","final":"<full answer in rich markdown>"}\n`+
+      `Available tools:\n${toolDocs}\n`+
+      `Rules: never invent tool results; keep thoughts to one sentence; produce a polished, well-structured final report.`;
     const msgs=[{role:'system',content:sys},{role:'user',content:task}];
+    let toolCount=0;
     try{
-      for(let step=0;step<8;step++){
+      for(let step=0;step<12;step++){
         const raw=await llmStream({provider:S.prefs.provider,model:S.prefs.model||defaultModel(S.prefs.provider),messages:msgs,temperature:0.5});
         let j=null;
         const m=raw.match(/\{[\s\S]*\}/);
         if(m){try{j=JSON.parse(m[0])}catch(e){}}
+        if(j&&j.thought&&(j.tool||j.final))
+          this.step('💭','thought',`<span class="sthought">${esc(j.thought)}</span>`);
         if(j&&j.tool&&AGENT_TOOLS[j.tool]){
-          this.log('tool · '+j.tool,`<code style="font-family:var(--font-m);font-size:11px">${esc(JSON.stringify(j.args||{}))}</code>`);
+          const T=AGENT_TOOLS[j.tool];toolCount++;
+          this.setStatus(j.tool+'…');
+          this.step(T.i||'🔧',j.tool,`<code style="font-family:var(--font-m);font-size:11px;color:var(--dim)">${esc(JSON.stringify(j.args||{}))}</code>`);
           msgs.push({role:'assistant',content:m[0]});
           try{
-            const res=await AGENT_TOOLS[j.tool].run(j.args||{});
-            if(res.img)this.log('result',`<img src="${res.img}">`);
-            else this.log('result',esc(res.text.slice(0,300))+(res.text.length>300?'…':''));
+            const res=await T.run(j.args||{});
+            if(res.img)this.step('🖼','result',`<img src="${res.img}" loading="lazy">`);
+            else this.step('📄','result',
+              `<details><summary>view result · ${((res.text||'').length/1000).toFixed(1)}k chars</summary><div>${esc((res.text||'').slice(0,2500))}</div></details>`);
             msgs.push({role:'user',content:'TOOL RESULT:\n'+(res.text||'')+(res.img?'\n(image shown to user)':'')});
           }catch(e){
-            this.log('error',esc(e.message));
-            msgs.push({role:'user',content:'TOOL ERROR: '+e.message});
+            this.step('⚠️','tool error',`<span style="color:#FF9C9C">${esc(e.message)}</span>`);
+            msgs.push({role:'user',content:'TOOL ERROR: '+e.message+' — adapt and continue.'});
           }
         }else{
           const final=j&&j.final?j.final:raw;
-          this.log('final',`<div class="sfinal">${md(final)}</div>`);
+          const secs=((Date.now()-t0)/1000).toFixed(0);
+          this.setStatus(`done · ${toolCount} tool${toolCount===1?'':'s'} · ${secs}s`,true);
+          $('#ar-final').innerHTML=`<div class="afinal">
+            <div class="ftag">${a.em} Report<span class="sp2"></span><button id="ar-copy">copy</button></div>
+            <div class="bubble" style="padding:0">${md(final)}</div></div>`;
+          $('#ar-copy').onclick=()=>{navigator.clipboard.writeText(final);toast('Report copied');};
           break;
         }
       }
-    }catch(e){this.log('error',esc(e.message));}
+      if(!$('#ar-final').innerHTML){
+        this.setStatus('step limit reached',true);
+        this.step('⚠️','stopped','Hit the 12-step limit without a final report — try a more focused task.');
+      }
+    }catch(e){
+      this.setStatus('failed',true);
+      this.step('⚠️','error',`<span style="color:#FF9C9C">${esc(e.message)}</span>`);
+    }
     this.running=false;
   }
 };
