@@ -1036,8 +1036,17 @@ $('#chat-mic').onclick=()=>Voice.dictate(t=>{const i=$('#chat-input');i.value=(i
 /* =========================================================
    IMAGE STUDIO (Pollinations — free, keyless)
    ========================================================= */
+function pollenErr(status,text){
+  let msg='HTTP '+status;
+  try{const j=JSON.parse(text);msg=(j.error&&(j.error.message||j.error))||j.message||msg;}
+  catch(e){if(text&&text.length<220)msg+=' — '+text.replace(/<[^>]+>/g,'').slice(0,160);}
+  if(status===402)msg+='\n\n◆ This model costs Pollen and your balance is empty. Claim/top up free Pollen at enter.pollinations.ai, or use a free model below.';
+  else if(status===429)msg+='\n\nRate limited — wait a moment and retry.';
+  else if(status===401||status===403)msg+='\n\nKey rejected — re-check it in Settings.';
+  return msg;
+}
 const Img={
-  w:1024,h:1024,
+  w:1024,h:1024,meta:{},
   async loadModels(){
     const sel=$('#img-model'),vsel=$('#vid-model');
     /* known-good baseline from Pollinations API docs — always offered even if the
@@ -1045,22 +1054,23 @@ const Img={
     const KNOWN_IMG=['klein','flux','zimage','qwen-image','kontext','nanobanana','nanobanana-2','gptimage','seedream5','wan-image','sana','p-image'];
     const KNOWN_VID=['seedance-2.0','seedance','wan-fast','wan','veo','nova-reel'];
     let imgs=[],vids=[];
-    const PAID=Img.paid=new Set();
     const headers={};
     if(S.keys.pollinations)headers.Authorization='Bearer '+S.keys.pollinations;
-    for(const url of ['https://gen.pollinations.ai/image/models','https://gen.pollinations.ai/models','https://image.pollinations.ai/models']){
+    for(const url of ['https://image.pollinations.ai/models','https://gen.pollinations.ai/image/models','https://gen.pollinations.ai/models']){
       try{
         const r=await fetch(url,{headers});if(!r.ok)continue;
         const j=await r.json();
         const arr=Array.isArray(j)?j:(j.models||j.data||[]);
         for(const m of arr){
           const name=typeof m==='string'?m:(m.name||m.id||'');
-          if(!name||/audio|tts|whisper|text|chat|embed/i.test(name))continue;
+          if(!name||/audio|tts|whisper|text|chat/i.test(name))continue;
           let isVid=false;
           if(typeof m==='object'){
-            if(m.paid_only||m.paidOnly||m.tier==='paid'||m.pricing?.paid_only)PAID.add(name);
             const om=m.output_modalities||m.outputModalities||[];
             isVid=m.video===true||m.type==='video'||!!m.video_capabilities||(Array.isArray(om)&&om.includes('video'));
+            const tier=((m.tier||m.pricing_tier||'')+'').toLowerCase();
+            const price=m.pricing&&(m.pricing.pollen||m.pricing.price||m.pricing.per_generation);
+            if((tier&&tier!=='anonymous')||(price&&price>0)||m.paid===true)this.meta[name]={paid:true};
           }
           if(!isVid)isVid=/^(veo|seedance|wan|kling|sora|hailuo|ltx|nova-reel|pixverse)/i.test(name)&&!/image/i.test(name);
           (isVid?vids:imgs).push(name);
@@ -1070,52 +1080,64 @@ const Img={
     }
     imgs=[...new Set([...imgs,...KNOWN_IMG])];
     vids=[...new Set([...vids,...KNOWN_VID])];
-    /* strongest-first quality order; auto-pick skips paid-only models so keyless users never hit a 402 */
-    const IMG_PREF=['nanobanana-pro','seedream-pro','gptimage-large','nanobanana-2','nanobanana','seedream5','gptimage','zimage','qwen-image','flux','klein'];
-    const VID_PREF=['seedance-2.0','veo','seedance','wan-pro-1080p','wan','wan-fast'];
+    const IMG_PREF=['klein','flux','zimage','qwen-image'];
+    const VID_PREF=['seedance-2.0','seedance','wan-fast','wan'];
     const order=(arr,prefs)=>[...prefs.filter(p=>arr.includes(p)),...arr.filter(a=>!prefs.includes(a)).sort()];
     imgs=order(imgs,IMG_PREF);vids=order(vids,VID_PREF);
-    /* default = user's explicit choice if still valid, else strongest usable model */
-    const pick=(arr,prefs,saved,userChosen)=>{
-      if(userChosen&&saved&&arr.includes(saved))return saved;
-      const usable=n=>S.keys.pollinations||!PAID.has(n);
-      return prefs.find(p=>arr.includes(p)&&usable(p))||arr.find(usable)||arr[0];
-    };
-    const opt=(n,best)=>`<option value="${esc(n)}" ${n===best?'selected':''}>${esc(n)}${PAID.has(n)?' 💎':''}</option>`;
+    /* default = user's explicit choice if still valid, else best preferred */
+    const pick=(arr,prefs,saved,userChosen)=>(userChosen&&saved&&arr.includes(saved))?saved:(prefs.find(p=>arr.includes(p))||arr[0]);
+    this.meta.veo={paid:true}; /* paid-only per Pollinations announcements */
+    const lab=n=>esc(n)+(this.meta[n]&&this.meta[n].paid?' ◆':'');
     const ibest=pick(imgs,IMG_PREF,S.prefs.imgModel,S.prefs.imgModelUser);
-    sel.innerHTML=imgs.map(n=>opt(n,ibest)).join('');
+    sel.innerHTML=imgs.map(n=>`<option value="${esc(n)}" ${n===ibest?'selected':''}>${lab(n)}</option>`).join('');
     S.prefs.imgModel=ibest;
     const vbest=pick(vids,VID_PREF,S.prefs.vidModel,S.prefs.vidModelUser);
-    vsel.innerHTML=vids.map(n=>opt(n,vbest)).join('');
+    vsel.innerHTML=vids.map(n=>`<option value="${esc(n)}" ${n===vbest?'selected':''}>${lab(n)}</option>`).join('');
     S.prefs.vidModel=vbest;save('prefs');
     sel.onchange=()=>{S.prefs.imgModel=sel.value;S.prefs.imgModelUser=true;save('prefs');toast('Image model: '+sel.value);};
     vsel.onchange=()=>{S.prefs.vidModel=vsel.value;S.prefs.vidModelUser=true;save('prefs');toast('Video model: '+vsel.value);};
   },
   url(prompt,{model,w,h,seed}={}){
-    let u=`https://gen.pollinations.ai/image/${encodeURIComponent(prompt)}?width=${w||this.w}&height=${h||this.h}&model=${encodeURIComponent(model||$('#img-model').value||S.prefs.imgModel||'zimage')}&seed=${seed??Math.floor(Math.random()*1e6)}`;
-    if(S.keys.pollinations)u+='&key='+encodeURIComponent(S.keys.pollinations);
-    return u;
+    return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=${w||this.w}&height=${h||this.h}&model=${encodeURIComponent(model||$('#img-model').value||'flux')}&seed=${seed??Math.floor(Math.random()*1e6)}&nologo=true`;
   },
   async gen(){
     const p=$('#img-prompt').value.trim();if(!p){toast('Write a prompt first');return;}
     const box=$('#img-result');
     box.innerHTML='<div class="shimmer">Generating…</div>';
     const u=this.url(p);
-    const img=new Image();
-    img.onload=()=>{
+    try{
+      const headers={};
+      if(S.keys.pollinations)headers.Authorization='Bearer '+S.keys.pollinations;
+      const r=await fetch(u,{headers});
+      if(!r.ok){
+        let t='';try{t=await r.text()}catch(e){}
+        throw Object.assign(new Error(pollenErr(r.status,t)),{status:r.status});
+      }
+      const blob=await r.blob();
+      const src=URL.createObjectURL(blob);
+      const img=new Image();img.src=src;
       box.innerHTML='';box.appendChild(img);
       box.insertAdjacentHTML('beforeend',`<div class="row" style="margin-top:10px">
-        <a class="btn ghost sm" href="${u}" download="agentos-image.jpg" target="_blank" style="text-decoration:none">⬇ Save</a>
+        <a class="btn ghost sm" href="${src}" download="agentos-image.jpg" style="text-decoration:none">⬇ Save</a>
         <button class="btn ghost sm" id="img-again">🎲 Reroll</button>
         <button class="btn ghost sm" id="img-tochat">💬 Discuss</button></div>`);
       $('#img-again').onclick=()=>this.gen();
       $('#img-tochat').onclick=()=>{go('chat');const c=Chat.cur()||Chat.newChat();Chat.attach=[u];
-        const row=$('#chat-attachrow');row.classList.remove('hide');row.innerHTML=`<img src="${u}">`;};
+        const row=$('#chat-attachrow');row.classList.remove('hide');row.innerHTML=`<img src="${src}">`;};
       S.gallery.unshift({u,p,t:Date.now()});S.gallery=S.gallery.slice(0,60);save('gallery');this.renderGal();
       recent('🎨',p.slice(0,40),'image');
-    };
-    img.onerror=()=>{box.innerHTML='<div class="empty">Generation failed — the model may be busy. Try again or switch model.</div>';};
-    img.src=u;
+    }catch(e){
+      const cur=$('#img-model').value;
+      const alts=['flux','zimage','sana'].filter(m=>m!==cur);
+      box.innerHTML=`<div class="card" style="border-color:rgba(217,87,87,.4)">
+        <div style="font-size:13px;white-space:pre-wrap">⚠️ ${esc(e.message)}</div>
+        <div class="row" style="margin-top:12px">
+          ${alts.map(m=>`<button class="btn ghost sm" data-alt="${m}">Try ${m}</button>`).join('')}
+        </div></div>`;
+      box.querySelectorAll('[data-alt]').forEach(b=>b.onclick=()=>{
+        $('#img-model').value=b.dataset.alt;
+        S.prefs.imgModel=b.dataset.alt;save('prefs');this.gen();});
+    }
   },
   renderGal(){
     const g=$('#img-gal');
@@ -1177,24 +1199,16 @@ $('#vid-go').onclick=async()=>{
   if(!model)return toast('No free video model available right now');
   const box=$('#vid-result');
   box.innerHTML='<div class="shimmer">Rendering video… this can take a minute or two</div>';
-  /* per-model duration limits: veo 4/6/8 · seedance 2-10 · seedance-2.0 4-15 · wan 2-15 · nova-reel multiples of 6 */
-  let dur=+$('#vid-dur').value;
-  if(/^seedance-2/.test(model))dur=Math.min(15,Math.max(4,dur));
-  else if(/^seedance/.test(model))dur=Math.min(10,Math.max(2,dur));
-  else if(/^veo/.test(model))dur=[4,6,8].reduce((a,b)=>Math.abs(b-dur)<Math.abs(a-dur)?b:a);
-  else if(/^nova-reel/.test(model))dur=Math.max(6,Math.round(dur/6)*6);
-  let u=`https://gen.pollinations.ai/video/${encodeURIComponent(p)}?model=${encodeURIComponent(model)}&seed=${Math.floor(Math.random()*1e6)}`
-    +`&duration=${dur}&aspectRatio=${encodeURIComponent(Vid.aspect)}&audio=true`;
+  let u=`https://image.pollinations.ai/prompt/${encodeURIComponent(p)}?model=${encodeURIComponent(model)}&nologo=true&seed=${Math.floor(Math.random()*1e6)}`
+    +`&duration=${$('#vid-dur').value}&aspect=${encodeURIComponent(Vid.aspect)}&aspect_ratio=${encodeURIComponent(Vid.aspect)}`;
   if(Vid.image)u+='&image='+encodeURIComponent(Vid.image);
   try{
     const headers={};
     if(S.keys.pollinations)headers.Authorization='Bearer '+S.keys.pollinations;
     const r=await fetch(u,{headers});
     if(!r.ok){
-      let msg='HTTP '+r.status;
-      try{const t=await r.text();if(t&&t.length<300)msg+=' — '+t.replace(/<[^>]+>/g,'').slice(0,160);}catch(e){}
-      if(r.status===402)msg+=' · This model needs Pollen credits — add a free key from enter.pollinations.ai in Settings, or pick wan-fast.';
-      throw new Error(msg);
+      let t='';try{t=await r.text()}catch(e){}
+      throw Object.assign(new Error(pollenErr(r.status,t)),{status:r.status});
     }
     const blob=await r.blob();
     const src=URL.createObjectURL(blob);
@@ -1202,10 +1216,21 @@ $('#vid-go').onclick=async()=>{
       box.innerHTML=`<div class="card"><video src="${src}" controls autoplay loop playsinline style="width:100%;border-radius:12px"></video>
         <a class="btn ghost sm" href="${src}" download="agentos-video.mp4" style="margin-top:10px;text-decoration:none">⬇ Save</a></div>`;
     }else{
-      box.innerHTML=`<div class="card"><img src="${src}" style="width:100%;border-radius:12px"><div class="hint">The provider returned a still frame instead of video — usually a temporary capacity issue. Reroll, or switch model.</div></div>`;
+      box.innerHTML=`<div class="card"><img src="${src}" style="width:100%;border-radius:12px"><div class="hint">Model returned an image frame.</div></div>`;
     }
     recent('🎬',p.slice(0,40),'video');
-  }catch(e){box.innerHTML=`<div class="empty">Video failed: ${esc(e.message)}. Free video capacity is limited — try again shortly.</div>`;}
+  }catch(e){
+    const cur=$('#vid-model').value;
+    const alts=['wan-fast','wan','seedance'].filter(m=>m!==cur&&[...$('#vid-model').options].some(o=>o.value===m));
+    box.innerHTML=`<div class="card" style="border-color:rgba(217,87,87,.4)">
+      <div style="font-size:13px;white-space:pre-wrap">⚠️ Video failed: ${esc(e.message)}</div>
+      <div class="row" style="margin-top:12px">
+        ${alts.map(m=>`<button class="btn ghost sm" data-valt="${m}">Try ${m}</button>`).join('')}
+      </div></div>`;
+    box.querySelectorAll('[data-valt]').forEach(b=>b.onclick=()=>{
+      $('#vid-model').value=b.dataset.valt;
+      S.prefs.vidModel=b.dataset.valt;save('prefs');$('#vid-go').click();});
+  }
 };
 
 /* =========================================================
