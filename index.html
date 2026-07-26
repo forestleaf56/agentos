@@ -593,7 +593,7 @@ const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',
 const Store={
   get(k,d){try{const v=localStorage.getItem('aos.'+k);return v?JSON.parse(v):d}catch(e){return d}},
   set(k,v){try{localStorage.setItem('aos.'+k,JSON.stringify(v))}catch(e){}
-    if(Sync.ready) Sync.push();}
+    try{if(typeof Sync!=='undefined'&&Sync.ready)Sync.push();}catch(e){}}
 };
 let S={
   keys:Store.get('keys',{}),          // provider -> key
@@ -608,13 +608,15 @@ let S={
 };
 function save(k){Store.set(k,S[k]);}
 /* one-time repair of auto-saved prefs from earlier builds */
-if(!S.prefs.fix2){
-  S.prefs.fix2=true;
-  if(!S.prefs.imgModelUser)S.prefs.imgModel='';
-  if(!S.prefs.vidModelUser)S.prefs.vidModel='';
-  if(S.keys.elevenlabs){S.prefs.ttsEngine='elevenlabs';S.prefs.ttsVoice='';}
-  save('prefs');
-}
+try{
+  if(!S.prefs.fix2){
+    S.prefs.fix2=true;
+    if(!S.prefs.imgModelUser)S.prefs.imgModel='';
+    if(!S.prefs.vidModelUser)S.prefs.vidModel='';
+    if(S.keys.elevenlabs){S.prefs.ttsEngine='elevenlabs';S.prefs.ttsVoice='';}
+    save('prefs');
+  }
+}catch(e){console.warn('prefs repair',e);}
 function recent(icon,text,scr){S.recent.unshift({icon,text,scr,t:Date.now()});S.recent=S.recent.slice(0,8);save('recent');renderRecent();}
 
 /* ---------- toast / modal ---------- */
